@@ -2036,6 +2036,12 @@ Possible values:
 - 1 — All queries are logged in the system tables.
 )", 0) \
     \
+    DECLARE(Bool, slow_query_log_enable, false, R"(
+Enable slow query logging to system.slow_log.
+)", 0) \
+    DECLARE(UInt64, slow_query_time_threshold_ms, 10000, R"(
+Threshold in milliseconds for logging slow queries.
+)", 0) \
     DECLARE(Bool, log_processors_profiles, true, R"(
 Write time that processor spent during execution/waiting for data to `system.processors_profile_log` table.
 

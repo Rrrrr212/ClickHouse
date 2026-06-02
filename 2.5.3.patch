@@ -1,0 +1,97 @@
+diff --git a/programs/server/config.xml b/programs/server/config.xml
+index 76f9dadfb26..44433331fa5 100644
+--- a/programs/server/config.xml
++++ b/programs/server/config.xml
+@@ -1214,6 +1214,28 @@
+         <!-- storage_policy>local_ssd</storage_policy -->
+     </query_log>
+ 
++    <slow_log>
++        <database>system</database>
++        <table>slow_log</table>
++        <partition_by>toYYYYMM(event_date)</partition_by>
++        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
++        <max_size_rows>1048576</max_size_rows>
++        <reserved_size_rows>8192</reserved_size_rows>
++        <buffer_size_rows_flush_threshold>524288</buffer_size_rows_flush_threshold>
++        <flush_on_crash>false</flush_on_crash>
++    </query_log>
++
++    <slow_log>
++        <database>system</database>
++        <table>slow_log</table>
++        <partition_by>toYYYYMM(event_date)</partition_by>
++        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
++        <max_size_rows>1048576</max_size_rows>
++        <reserved_size_rows>8192</reserved_size_rows>
++        <buffer_size_rows_flush_threshold>524288</buffer_size_rows_flush_threshold>
++        <flush_on_crash>false</flush_on_crash>
++    </slow_log>
++
+     <!-- Trace log. Stores stack traces collected by query profilers.
+          See query_profiler_real_time_period_ns and query_profiler_cpu_time_period_ns settings. -->
+     <trace_log>
+diff --git a/src/Core/Settings.cpp b/src/Core/Settings.cpp
+index 7e589082b3c..4b5506060b3 100644
+--- a/src/Core/Settings.cpp
++++ b/src/Core/Settings.cpp
+@@ -2036,6 +2036,12 @@ Possible values:
+ - 1 — All queries are logged in the system tables.
+ )", 0) \
+     \
++    DECLARE(Bool, slow_query_log_enable, false, R"(
++Enable slow query logging to system.slow_log.
++)", 0) \
++    DECLARE(UInt64, slow_query_time_threshold_ms, 10000, R"(
++Threshold in milliseconds for logging slow queries.
++)", 0) \
+     DECLARE(Bool, log_processors_profiles, true, R"(
+ Write time that processor spent during execution/waiting for data to `system.processors_profile_log` table.
+ 
+diff --git a/src/Interpreters/SystemLog.cpp b/src/Interpreters/SystemLog.cpp
+index 00c6f99595c..96a2429fa26 100644
+--- a/src/Interpreters/SystemLog.cpp
++++ b/src/Interpreters/SystemLog.cpp
+@@ -35,6 +35,7 @@
+ #include <Interpreters/PredicateStatisticsLog.h>
+ #include <Interpreters/ProcessorsProfileLog.h>
+ #include <Interpreters/QueryLog.h>
++#include <Interpreters/SlowQueryMonitor.h>
+ #include <Interpreters/QueryMetricLog.h>
+ #include <Interpreters/QueryThreadLog.h>
+ #include <Interpreters/IcebergMetadataLog.h>
+diff --git a/src/Interpreters/SystemLog.h b/src/Interpreters/SystemLog.h
+index dcf52c250fe..4951a0e5ffc 100644
+--- a/src/Interpreters/SystemLog.h
++++ b/src/Interpreters/SystemLog.h
+@@ -45,6 +45,7 @@
+     M(IcebergMetadataLog,    iceberg_metadata_log, "Contains content of Iceberg metadata files.") \
+     M(DeltaMetadataLog,    delta_lake_metadata_log, "Contains content of Delta metadata files.") \
+     M(PredicateStatisticsLog, predicate_statistics_log, "Contains sampled per-predicate selectivity statistics collected during query execution. Sampling is controlled by predicate_statistics_sample_rate; lower values increase overhead and should be tuned with care.") \
++    M(SlowQueryLog, slow_log, "Contains information about slow queries.") \
+ 
+ #define LIST_OF_CLOUD_SYSTEM_LOGS(M) \
+     M(DistributedCacheLog, distributed_cache_log, "Contains the history of all interactions with distributed cache.") \
+diff --git a/src/Interpreters/executeQuery.cpp b/src/Interpreters/executeQuery.cpp
+index 9e32c35366c..2b10c75dc58 100644
+--- a/src/Interpreters/executeQuery.cpp
++++ b/src/Interpreters/executeQuery.cpp
+@@ -58,6 +58,7 @@
+ #include <Interpreters/ProcessList.h>
+ #include <Interpreters/ProcessorsProfileLog.h>
+ #include <Interpreters/QueryLog.h>
++#include <Interpreters/SlowQueryMonitor.h>
+ #include <Interpreters/QueryMetricLog.h>
+ #include <Interpreters/ReplaceQueryParameterVisitor.h>
+ #include <Interpreters/SelectIntersectExceptQueryVisitor.h>
+@@ -709,6 +710,10 @@ static void logQueryFinishImpl(
+                 query_log->add(elem);
+         }
+ 
++        if (settings[Setting::slow_query_log_enable] && elem.query_duration_ms >= settings[Setting::slow_query_time_threshold_ms])
++        {
++            SlowQueryMonitor::checkAndRecord(elem.query, context, info, elem.query_duration_ms, elem);
++        }
+     }
+ 
+     if (query_span && query_span->isTraceEnabled())
