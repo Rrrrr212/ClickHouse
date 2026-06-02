@@ -968,6 +968,109 @@ class Targeting:
         ]
         return specific
 
+    @staticmethod
+    def _extract_path_domain_keywords(filepath: str) -> list:
+        """
+        Extract domain-specific keywords from the FULL file path, including directory
+        components.  This is the foundation of the domain-relevance scoring rule:
+        when a source file has clear domain semantics in its path (e.g. "Keeper",
+        "ZooKeeper", "Parquet", "Arrow"), tests that also contain those keywords in
+        their names are highly likely to be relevant, while tests without any such
+        keywords are unlikely to be related.
+
+        Path components that are too generic (architectural components like
+        "Storages", "Processors", "Common") are excluded since they appear in
+        thousands of source files and provide no domain signal.
+
+        The decomposition uses the same CamelCase splitting and common-word filtering
+        as `_extract_domain_keywords`, but applies it to directory names in addition
+        to the filename.  This means:
+          - "ZooKeeper/" -> words ["Zoo", "Keeper"]
+          - "KeeperClientCLI/" -> words ["Keeper", "Client", "CLI"]
+          - "Commands.cpp"  -> words ["Commands"]
+        After filtering common words like "Client", "CLI", the resulting keywords
+        for `src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp` are:
+          - From dir "ZooKeeper": "Zoo", "Keeper"
+          - From dir "KeeperClientCLI": "Keeper" (already added by ZooKeeper)
+          - From filename "Commands.cpp": "Commands" (if not in COMMON set)
+
+        Returns a list of unique domain-specific keywords for the given file path.
+        An empty list means the file has no discernible domain signal (e.g.
+        `src/Common/ThreadPool.cpp` where all path components are generic).
+        """
+        GENERIC_PATH_COMPONENTS = frozenset({
+            "src", "programs", "utils", "base",
+            "Storages", "Interpreters", "Processors", "Functions",
+            "Common", "Server", "Parsers", "Analyzer", "Formats",
+            "Access", "IO", "Disks", "Columns", "DataTypes", "Core",
+            "Databases", "Backups", "Coordination", "Client",
+            "Daemon", "Compression", "AggregateFunctions",
+            "TableFunctions", "Dictionaries", "QueryPipeline",
+            "Impl", "Sources", "Transforms", "Sinks",
+            "Utils", "Tests", "tests",
+        })
+        parts = filepath.replace("\\", "/").split("/")
+        all_keywords: list = []
+        for part in parts:
+            if part in GENERIC_PATH_COMPONENTS:
+                continue
+            pseudo_filename = part + ".cpp" if "." not in part else part
+            kws = Targeting._extract_domain_keywords(pseudo_filename)
+            all_keywords.extend(kws)
+        seen: set = set()
+        unique: list = []
+        for kw in all_keywords:
+            kw_lower = kw.lower()
+            if kw_lower not in seen:
+                seen.add(kw_lower)
+                unique.append(kw)
+        return unique
+
+    @staticmethod
+    def _compute_domain_relevance(test_name: str, domain_keywords: list) -> float:
+        """
+        Compute a domain relevance score for a test name against the set of
+        domain keywords extracted from changed source files.
+
+        The score is a multiplier applied to the test's coverage-based score:
+          - ≥ 1.0: test is likely relevant to the changed domain (boost)
+          - < 1.0: test is unlikely to be relevant (penalty)
+          - 1.0: no domain signal available (neutral)
+
+        Scoring logic:
+          - No domain keywords available → neutral (1.0)
+          - Test matches 1 keyword  → 1.3x boost
+          - Test matches 2 keywords → 1.5x boost
+          - Test matches 3+ keywords → 1.7x boost (capped)
+          - Test matches 0 keywords → 0.35x penalty
+
+        The penalty (0.35) is aggressive because:
+          1. Keyword extraction from path components is conservative (only
+             non-generic CamelCase words survive the filter).
+          2. A test with zero domain keyword matches has NO semantic connection
+             to the changed files — it was likely pulled in through shared
+             infrastructure regions (ThreadPool, Context, etc.).
+          3. The penalty ensures unrelated tests (e.g. "pipeline_executor_UAF"
+             for a Keeper modification) rank below the MIN_SCORE threshold and
+             are excluded from the final selection.
+
+        The specific Keeper case:
+          - Changed file: src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp
+          - Domain keywords: ["Zoo", "Keeper", "KeeperClientCLI", "Commands"]
+          - Test "04068_keeper_client_watch_deleted_event": matches "keeper" → 1.3x
+          - Test "01505_pipeline_executor_UAF": matches none → 0.35x
+        """
+        if not domain_keywords:
+            return 1.0
+
+        test_lower = test_name.lower()
+        matched_count = sum(1 for kw in domain_keywords if kw.lower() in test_lower)
+
+        if matched_count == 0:
+            return 0.35
+
+        return min(1.0 + 0.3 * matched_count, 1.7)
+
     def _query_indirect_call_tests(self, primary_result: dict, sparse_files: list | None = None) -> dict:
         """
         Tertiary pass: find tests that call the same virtual / function-pointer
@@ -1834,6 +1937,26 @@ class Targeting:
             # Store keyword tests for the guarantee injection after ranking.
             self._keyword_guarantee = [q[0] for q in all_supplement_quads]
 
+        # Extract domain keywords from ALL changed C++ files for domain-relevance
+        # scoring.  Keywords are extracted from the full path (directory names +
+        # filename) using CamelCase decomposition.  Tests whose names contain these
+        # keywords get a score boost; tests without any keyword match get a penalty
+        # (see `_compute_domain_relevance`).  This prevents unrelated tests like
+        # "01505_pipeline_executor_UAF" from being selected when the PR only
+        # modifies Keeper/ZooKeeper files.
+        domain_keywords: list = []
+        COVERAGE_TRACKED_PREFIXES_DOMAIN = ("src/", "programs/", "utils/", "base/")
+        for f in list(dict.fromkeys(f for f, _ in changed_lines
+                                     if any(f.startswith(p) for p in COVERAGE_TRACKED_PREFIXES_DOMAIN)
+                                     and (f.endswith(".cpp") or f.endswith(".h"))
+                                     and f not in self.SHARED_REGISTRY_FILES)):
+            kws = self._extract_path_domain_keywords(f)
+            for kw in kws:
+                if kw.lower() not in (dk.lower() for dk in domain_keywords):
+                    domain_keywords.append(kw)
+        if domain_keywords:
+            print(f"[find_tests] domain keywords from changed files: {domain_keywords}")
+
         # Accumulate per-test scores across all changed lines.
         # line_to_tests values are lists of
         #   (test_name, region_width, min_depth, region_test_count, pass_weight).
@@ -1857,6 +1980,31 @@ class Targeting:
                 )
                 if depth < min_depth_seen.get(t, 256):
                     min_depth_seen[t] = depth
+
+        # Apply domain-relevance multiplier to each test's score.
+        # Tests whose names contain domain keywords from changed files get a boost;
+        # tests with no keyword match get a penalty.  This is the core of the
+        # path-semantic filtering rule: a test like "01505_pipeline_executor_UAF"
+        # has zero domain overlap with "Keeper" changes and should be excluded.
+        if domain_keywords:
+            domain_relevance: dict = {}
+            affected_count = 0
+            penalized_count = 0
+            for t in list(width_score.keys()):
+                dr = self._compute_domain_relevance(t, domain_keywords)
+                domain_relevance[t] = dr
+                if dr != 1.0:
+                    width_score[t] *= dr
+                    if dr > 1.0:
+                        affected_count += 1
+                    else:
+                        penalized_count += 1
+            if affected_count or penalized_count:
+                print(
+                    f"[find_tests] domain-relevance: +{affected_count} boosted, "
+                    f"-{penalized_count} penalized "
+                    f"(keywords: {domain_keywords})"
+                )
 
         def sort_key(t):
             narrow = has_narrow_hit[t]
