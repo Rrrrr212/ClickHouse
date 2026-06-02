@@ -1,0 +1,11 @@
+community_links:
+  slack: "https://clickhouse.com/slack"
+  telegram: "https://telegram.me/clickhouse_en"
+  youtube: "https://www.youtube.com/c/ClickHouseDB"
+  blog: "https://clickhouse.com/blog/"
+  bluesky: "https://bsky.app/profile/clickhouse.com"
+  x: "https://x.com/ClickHouseDB"
+
+release_info:
+  next_release_date: "2026-06-25"
+  next_release_version: "26.6"
