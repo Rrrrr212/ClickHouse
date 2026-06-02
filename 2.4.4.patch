@@ -1,0 +1,2094 @@
+diff --git a/.github/workflows/tools_consistency.yml b/.github/workflows/tools_consistency.yml
+new file mode 100644
+index 00000000000..0e39d106beb
+--- /dev/null
++++ b/.github/workflows/tools_consistency.yml
+@@ -0,0 +1,36 @@
++name: Tools Consistency Check
++
++on:
++  pull_request:
++    paths:
++      - 'tools/**'
++      - 'README.md'
++  push:
++    branches:
++      - 'master'
++    paths:
++      - 'tools/**'
++      - 'README.md'
++
++jobs:
++  validate-community:
++    runs-on: [self-hosted, style-checker]
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v2
++      - name: Install dependencies
++        run: pip install pyyaml
++      - name: Validate community config
++        run: python3 tools/community/generate_community_links.py --validate
++      - name: Check README consistency
++        run: python3 tools/community/generate_community_links.py --check-readme
++
++  validate-release-checklist:
++    runs-on: [self-hosted, style-checker]
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v2
++      - name: Install dependencies
++        run: pip install pyyaml
++      - name: Validate release checklist config
++        run: python3 tools/release/release_checklist.py --validate
+\ No newline at end of file
+diff --git a/tools/README.md b/tools/README.md
+new file mode 100644
+index 00000000000..2f4e272103d
+--- /dev/null
++++ b/tools/README.md
+@@ -0,0 +1,50 @@
++# ClickHouse Tools
++
++This directory contains standalone tooling for the ClickHouse project, separated
++from the core C++ codebase for better modularity and maintainability.
++
++## Directory Structure
++
++```
++tools/
++├── toolchain/          # Installation toolchain
++│   ├── installer/      # ClickHouse installer binary and scripts
++│   │   ├── Install.cpp
++│   │   ├── install.sh
++│   │   └── templates/
++│   └── verifier/       # Installation verification tool
++│       └── InstallVerify.cpp
++├── community/          # Community management tools
++│   ├── community.yaml  # Centralized community links configuration
++│   └── generate_community_links.py  # Link generator
++└── release/            # Release management tools
++    ├── release_checklist.yaml  # Release checklist configuration
++    ├── release_checklist.py    # Release checklist executor
++    └── generate_release_notes.py  # Release notes generator
++```
++
++## Modules
++
++### Toolchain (`tools/toolchain/`)
++
++The installation toolchain provides a standalone installation mechanism for
++ClickHouse, independent of the `curl | sh` pattern:
++
++- `installer/install.sh` - Standalone shell-based installer
++- `installer/Install.cpp` - C++ installation binary (used by `clickhouse install`)
++- `verifier/InstallVerify.cpp` - Verifies that an installation is correct
++
++### Community (`tools/community/`)
++
++Centralized management of community channel links:
++
++- `community.yaml` - Single source of truth for all community links
++- `generate_community_links.py` - Generates links in various formats (README, HTML, Markdown)
++
++### Release (`tools/release/`)
++
++Scriptable release management:
++
++- `release_checklist.yaml` - Executable checklist configuration
++- `release_checklist.py` - Interactive checklist executor
++- `generate_release_notes.py` - Automated release notes generation
+\ No newline at end of file
+diff --git a/tools/community/community.yaml b/tools/community/community.yaml
+new file mode 100644
+index 00000000000..f2623ab5eb1
+--- /dev/null
++++ b/tools/community/community.yaml
+@@ -0,0 +1,206 @@
++# ClickHouse Community Configuration
++# Centralized configuration for all community channels and social media links.
++# This file is the single source of truth for community entries used across
++# the README, documentation, and other marketing materials.
++#
++# Structure:
++#   - Each category represents a group of related community channels
++#   - Each entry has: name, url, description, icon, and optional tags
++#
++# Usage:
++#   python3 tools/community/generate_community_links.py --format readme
++#   python3 tools/community/generate_community_links.py --format html
++#   python3 tools/community/generate_community_links.py --validate
++
++version: 1
++last_updated: "2026-06-02"
++
++categories:
++  - id: primary
++    label: "Primary Channels"
++    order: 1
++    entries:
++      - name: "Official Website"
++        url: "https://clickhouse.com/"
++        description: "Quick high-level overview of ClickHouse"
++        icon: "globe"
++        tags: [official, primary]
++
++      - name: "ClickHouse Cloud"
++        url: "https://clickhouse.cloud"
++        description: "ClickHouse as a service, built by the creators and maintainers"
++        icon: "cloud"
++        tags: [official, cloud]
++
++      - name: "Documentation"
++        url: "https://clickhouse.com/docs/"
++        description: "In-depth documentation for all ClickHouse features"
++        icon: "book"
++        tags: [official, docs]
++
++      - name: "Tutorial"
++        url: "https://clickhouse.com/docs/getting_started/tutorial/"
++        description: "Set up and query a small ClickHouse cluster"
++        icon: "graduation-cap"
++        tags: [official, docs, getting-started]
++
++  - id: chat
++    label: "Chat & Community"
++    order: 2
++    entries:
++      - name: "Slack"
++        url: "https://clickhouse.com/slack"
++        description: "Chat with ClickHouse users in real-time"
++        icon: "slack"
++        tags: [community, chat, real-time]
++        platform: slack
++        invite_url: "https://clickhouse.com/slack"
++
++      - name: "Telegram (English)"
++        url: "https://telegram.me/clickhouse_en"
++        description: "Telegram community for English-speaking users"
++        icon: "telegram"
++        tags: [community, chat, real-time]
++        platform: telegram
++        language: en
++
++      - name: "Telegram (Russian)"
++        url: "https://telegram.me/clickhouse_ru"
++        description: "Telegram community for Russian-speaking users"
++        icon: "telegram"
++        tags: [community, chat, real-time]
++        platform: telegram
++        language: ru
++
++      - name: "Telegram (Chinese)"
++        url: "https://telegram.me/clickhouse_cn"
++        description: "Telegram community for Chinese-speaking users"
++        icon: "telegram"
++        tags: [community, chat, real-time]
++        platform: telegram
++        language: zh
++
++  - id: content
++    label: "Content & Media"
++    order: 3
++    entries:
++      - name: "YouTube Channel"
++        url: "https://www.youtube.com/c/ClickHouseDB"
++        description: "Video content about ClickHouse"
++        icon: "youtube"
++        tags: [content, video]
++        platform: youtube
++
++      - name: "ClickHouse Theater"
++        url: "https://presentations.clickhouse.com/"
++        description: "Presentations and videos about ClickHouse"
++        icon: "presentation"
++        tags: [content, presentations]
++
++      - name: "Blog"
++        url: "https://clickhouse.com/blog/"
++        description: "Articles, announcements, and event reports"
++        icon: "rss"
++        tags: [content, blog, official]
++
++      - name: "Meetup Playlist"
++        url: "https://www.youtube.com/playlist?list=PL0Z2YDlm0b3iNDUzpY1S3L_iV4nARda_U"
++        description: "Recent meetup recordings"
++        icon: "video"
++        tags: [content, video, meetups]
++
++      - name: "Release Call Playlist"
++        url: "https://www.youtube.com/playlist?list=PL0Z2YDlm0b3jAlSy1JxyP8zluvXaN3nxU"
++        description: "Monthly release call recordings"
++        icon: "video"
++        tags: [content, video, releases]
++
++  - id: social
++    label: "Social Media"
++    order: 4
++    entries:
++      - name: "Bluesky"
++        url: "https://bsky.app/profile/clickhouse.com"
++        description: "Short news and updates"
++        icon: "bluesky"
++        tags: [social, news]
++        platform: bluesky
++
++      - name: "X (Twitter)"
++        url: "https://x.com/ClickHouseDB"
++        description: "Short news and announcements"
++        icon: "x"
++        tags: [social, news]
++        platform: twitter
++
++      - name: "LinkedIn"
++        url: "https://www.linkedin.com/company/clickhouse"
++        description: "Professional network and company updates"
++        icon: "linkedin"
++        tags: [social, professional]
++        platform: linkedin
++
++      - name: "GitHub"
++        url: "https://github.com/ClickHouse/ClickHouse"
++        description: "Source code and issue tracker"
++        icon: "github"
++        tags: [social, development, official]
++        platform: github
++
++  - id: resources
++    label: "Resources"
++    order: 5
++    entries:
++      - name: "Code Browser"
++        url: "https://github.dev/ClickHouse/ClickHouse"
++        description: "Source code with syntax highlighting, powered by github.dev"
++        icon: "code"
++        tags: [development, tools]
++
++      - name: "Contact"
++        url: "https://clickhouse.com/company/contact"
++        description: "Get your questions answered"
++        icon: "mail"
++        tags: [support, official]
++
++      - name: "Careers"
++        url: "https://clickhouse.com/company/careers"
++        description: "Join the ClickHouse team"
++        icon: "briefcase"
++        tags: [careers, official]
++        email: "careers@clickhouse.com"
++
++      - name: "Events"
++        url: "https://clickhouse.com/company/news-events"
++        description: "Upcoming trainings, meetups, and speaking engagements"
++        icon: "calendar"
++        tags: [events, community]
++        contact_email: "tyler@clickhouse.com"
++
++  - id: security
++    label: "Security & Legal"
++    order: 6
++    entries:
++      - name: "Security Policy"
++        url: "https://github.com/ClickHouse/ClickHouse/blob/master/SECURITY.md"
++        description: "Security vulnerability reporting and policy"
++        icon: "shield"
++        tags: [security, official]
++
++      - name: "Bug Bounty"
++        url: "https://bugcrowd.com/clickhouse"
++        description: "Report vulnerabilities through Bugcrowd"
++        icon: "bug"
++        tags: [security, bug-bounty]
++
++      - name: "Legal"
++        url: "mailto:legal@clickhouse.com"
++        description: "Legal inquiries and CLA"
++        icon: "scale"
++        tags: [legal, official]
++
++      - name: "License"
++        url: "https://www.apache.org/licenses/LICENSE-2.0"
++        description: "Apache 2.0 License"
++        icon: "file-text"
++        tags: [legal, license]
+\ No newline at end of file
+diff --git a/tools/community/generate_community_links.py b/tools/community/generate_community_links.py
+new file mode 100644
+index 00000000000..d6c8cca392d
+--- /dev/null
++++ b/tools/community/generate_community_links.py
+@@ -0,0 +1,223 @@
++#!/usr/bin/env python3
++"""
++ClickHouse Community Links Generator
++
++Generates formatted community links from the centralized community.yaml
++configuration file. Supports multiple output formats for use in README,
++documentation, and other marketing materials.
++
++Usage:
++    python3 tools/community/generate_community_links.py --format readme
++    python3 tools/community/generate_community_links.py --format html
++    python3 tools/community/generate_community_links.py --format markdown
++    python3 tools/community/generate_community_links.py --validate
++    python3 tools/community/generate_community_links.py --check-readme
++"""
++
++import argparse
++import sys
++from pathlib import Path
++from typing import Dict, List, Optional
++
++import yaml
++
++
++def load_community_config(config_path: Optional[str] = None) -> Dict:
++    if config_path is None:
++        config_path = Path(__file__).parent / "community.yaml"
++
++    with open(config_path, "r", encoding="utf-8") as f:
++        config = yaml.safe_load(f)
++
++    if not config:
++        raise ValueError("Empty community configuration")
++
++    required_keys = ["version", "categories"]
++    for key in required_keys:
++        if key not in config:
++            raise ValueError(f"Missing required key in community config: {key}")
++
++    return config
++
++
++def validate_config(config: Dict) -> List[str]:
++    errors = []
++
++    for category in config.get("categories", []):
++        if "id" not in category:
++            errors.append(f"Category missing 'id': {category.get('label', 'unknown')}")
++        if "entries" not in category:
++            errors.append(f"Category '{category.get('id', 'unknown')}' missing 'entries'")
++
++        for entry in category.get("entries", []):
++            if "name" not in entry:
++                errors.append(f"Entry in '{category.get('id')}' missing 'name'")
++            if "url" not in entry:
++                errors.append(f"Entry '{entry.get('name', 'unknown')}' missing 'url'")
++
++    return errors
++
++
++def format_readme_links(config: Dict) -> str:
++    lines = []
++    lines.append("## Useful Links")
++    lines.append("")
++
++    for category in config.get("categories", []):
++        if category.get("id") in ("security", "resources"):
++            continue
++
++        entries = category.get("entries", [])
++        for entry in entries:
++            name = entry["name"]
++            url = entry["url"]
++            description = entry.get("description", "")
++            line = f"* [{name}]({url}) {description}"
++            lines.append(line)
++
++    lines.append("")
++    return "\n".join(lines)
++
++
++def format_markdown_table(config: Dict) -> str:
++    lines = []
++    lines.append("| Category | Channel | Description | URL |")
++    lines.append("|----------|---------|-------------|-----|")
++
++    for category in config.get("categories", []):
++        label = category.get("label", category.get("id", ""))
++        for entry in category.get("entries", []):
++            name = entry["name"]
++            url = entry["url"]
++            description = entry.get("description", "")
++            lines.append(f"| {label} | {name} | {description} | [{name}]({url}) |")
++
++    return "\n".join(lines)
++
++
++def format_html_links(config: Dict) -> str:
++    lines = ['<ul class="community-links">']
++
++    for category in config.get("categories", []):
++        label = category.get("label", category.get("id", ""))
++        lines.append(f'  <li class="community-category">')
++        lines.append(f"    <strong>{label}</strong>")
++        lines.append('    <ul>')
++
++        for entry in category.get("entries", []):
++            name = entry["name"]
++            url = entry["url"]
++            description = entry.get("description", "")
++            icon = entry.get("icon", "")
++            lines.append(
++                f'      <li><a href="{url}" title="{description}"'
++                f' class="community-link community-link-{icon}">{name}</a></li>'
++            )
++
++        lines.append("    </ul>")
++        lines.append("  </li>")
++
++    lines.append("</ul>")
++    return "\n".join(lines)
++
++
++def check_readme_consistency(config: Dict, readme_path: Optional[str] = None) -> List[str]:
++    if readme_path is None:
++        readme_path = Path(__file__).parent.parent.parent / "README.md"
++
++    issues = []
++
++    with open(readme_path, "r", encoding="utf-8") as f:
++        readme_content = f.read()
++
++    for category in config.get("categories", []):
++        for entry in category.get("entries", []):
++            if "url" in entry and entry["url"] not in readme_content:
++                issues.append(
++                    f"URL for '{entry['name']}' ({entry['url']}) not found in README.md"
++                )
++
++    return issues
++
++
++def main():
++    parser = argparse.ArgumentParser(
++        description="Generate community links from centralized configuration"
++    )
++    parser.add_argument(
++        "--format",
++        choices=["readme", "markdown", "html", "json"],
++        default="readme",
++        help="Output format (default: readme)",
++    )
++    parser.add_argument(
++        "--config",
++        default=None,
++        help="Path to community.yaml (default: tools/community/community.yaml)",
++    )
++    parser.add_argument(
++        "--validate",
++        action="store_true",
++        help="Validate the community configuration file",
++    )
++    parser.add_argument(
++        "--check-readme",
++        action="store_true",
++        help="Check if README.md contains all community links from the config",
++    )
++    args = parser.parse_args()
++
++    try:
++        config = load_community_config(args.config)
++    except FileNotFoundError as e:
++        print(f"Error: {e}", file=sys.stderr)
++        sys.exit(1)
++    except yaml.YAMLError as e:
++        print(f"Error parsing YAML: {e}", file=sys.stderr)
++        sys.exit(1)
++
++    if args.validate:
++        errors = validate_config(config)
++        if errors:
++            print("Configuration validation FAILED:")
++            for error in errors:
++                print(f"  - {error}")
++            sys.exit(1)
++        else:
++            print("Configuration validation PASSED")
++            print(f"Version: {config.get('version')}")
++            print(f"Categories: {len(config.get('categories', []))}")
++            total_entries = sum(
++                len(cat.get("entries", [])) for cat in config.get("categories", [])
++            )
++            print(f"Total entries: {total_entries}")
++            sys.exit(0)
++
++    if args.check_readme:
++        issues = check_readme_consistency(config)
++        if issues:
++            print("README.md consistency check FAILED:")
++            for issue in issues:
++                print(f"  - {issue}")
++            sys.exit(1)
++        else:
++            print("README.md consistency check PASSED")
++            sys.exit(0)
++
++    if args.format == "readme":
++        output = format_readme_links(config)
++    elif args.format == "markdown":
++        output = format_markdown_table(config)
++    elif args.format == "html":
++        output = format_html_links(config)
++    elif args.format == "json":
++        import json
++        output = json.dumps(config, indent=2, ensure_ascii=False)
++    else:
++        output = format_readme_links(config)
++
++    print(output)
++
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
+diff --git a/tools/release/generate_release_notes.py b/tools/release/generate_release_notes.py
+new file mode 100644
+index 00000000000..801af6949a3
+--- /dev/null
++++ b/tools/release/generate_release_notes.py
+@@ -0,0 +1,310 @@
++#!/usr/bin/env python3
++"""
++ClickHouse Release Notes Generator
++
++Generates release notes from merged pull requests between two versions.
++Fetches PRs from GitHub, categorizes them according to ClickHouse's
++changelog categories, and produces formatted release notes in Markdown.
++
++Usage:
++    python3 tools/release/generate_release_notes.py --from v26.4 --to v26.5
++    python3 tools/release/generate_release_notes.py --output RELEASE_NOTES.md
++    python3 tools/release/generate_release_notes.py --from v26.4 --to v26.5 --format github
++"""
++
++import argparse
++import json
++import os
++import sys
++from datetime import datetime
++from pathlib import Path
++from typing import Dict, List, Optional
++
++import requests
++
++CATEGORIES = {
++    "New Feature": {
++        "emoji": "✨",
++        "description": "New features",
++        "order": 1,
++    },
++    "Experimental Feature": {
++        "emoji": "🧪",
++        "description": "Experimental features",
++        "order": 2,
++    },
++    "Improvement": {
++        "emoji": "🚀",
++        "description": "Improvements to existing functionality",
++        "order": 3,
++    },
++    "Performance Improvement": {
++        "emoji": "⚡",
++        "description": "Performance improvements",
++        "order": 4,
++    },
++    "Backward Incompatible Change": {
++        "emoji": "⚠️",
++        "description": "Backward incompatible changes",
++        "order": 5,
++    },
++    "Build/Testing/Packaging Improvement": {
++        "emoji": "🧰",
++        "description": "Build, testing, and packaging improvements",
++        "order": 6,
++    },
++    "Documentation": {
++        "emoji": "📚",
++        "description": "Documentation improvements",
++        "order": 7,
++    },
++    "Critical Bug Fix": {
++        "emoji": "🔴",
++        "description": "Critical bug fixes (crash, data loss, RBAC)",
++        "order": 8,
++    },
++    "Bug Fix": {
++        "emoji": "🐛",
++        "description": "Bug fixes for user-visible misbehavior",
++        "order": 9,
++    },
++    "CI Fix or improvement": {
++        "emoji": "🔧",
++        "description": "CI fixes and improvements",
++        "order": 10,
++        "hide_in_release_notes": True,
++    },
++    "Not for changelog": {
++        "emoji": "⚫",
++        "description": "Not for changelog",
++        "order": 11,
++        "hide_in_release_notes": True,
++    },
++}
++
++GITHUB_API = "https://api.github.com"
++REPO = "ClickHouse/ClickHouse"
++
++
++def get_github_token() -> Optional[str]:
++    token = os.environ.get("GITHUB_TOKEN")
++    if token:
++        return token
++    token_path = Path.home() / ".github_token"
++    if token_path.exists():
++        return token_path.read_text().strip()
++    return None
++
++
++def get_headers() -> Dict:
++    headers = {"Accept": "application/vnd.github.v3+json"}
++    token = get_github_token()
++    if token:
++        headers["Authorization"] = f"token {token}"
++    return headers
++
++
++def get_merged_prs_between(version_from: str, version_to: str) -> List[Dict]:
++    url = f"{GITHUB_API}/repos/{REPO}/compare/{version_from}...{version_to}"
++    response = requests.get(url, headers=get_headers())
++    response.raise_for_status()
++    data = response.json()
++
++    pr_numbers = set()
++    for commit in data.get("commits", []):
++        message = commit.get("commit", {}).get("message", "")
++        if "Merge #" in message or "PR #" in message:
++            import re
++            matches = re.findall(r'#(\d+)', message)
++            for match in matches:
++                pr_numbers.add(int(match))
++
++    prs = []
++    for pr_number in sorted(pr_numbers):
++        url = f"{GITHUB_API}/repos/{REPO}/pulls/{pr_number}"
++        response = requests.get(url, headers=get_headers())
++        if response.status_code == 200:
++            pr = response.json()
++            if pr.get("merged", False):
++                prs.append(pr)
++
++    return sorted(prs, key=lambda p: p["number"])
++
++
++def categorize_prs(prs: List[Dict]) -> Dict[str, List[Dict]]:
++    categorized: Dict[str, List[Dict]] = {cat: [] for cat in CATEGORIES.keys()}
++
++    for pr in prs:
++        category = "Not for changelog"
++        if "labels" in pr and pr["labels"]:
++            for label in pr["labels"]:
++                label_name = label["name"]
++                if label_name in CATEGORIES:
++                    category = label_name
++                    break
++        categorized[category].append(pr)
++
++    return categorized
++
++
++def format_markdown_release_notes(categorized: Dict[str, List[Dict]], version: str, date: str) -> str:
++    lines = [
++        f"# ClickHouse {version} Release Notes",
++        "",
++        f"Released: {date}",
++        "",
++    ]
++
++    sorted_categories = sorted(
++        CATEGORIES.items(),
++        key=lambda x: x[1]["order"],
++    )
++
++    for category_name, category_info in sorted_categories:
++        prs = categorized.get(category_name, [])
++        if not prs:
++            continue
++        if category_info.get("hide_in_release_notes", False):
++            continue
++
++        emoji = category_info["emoji"]
++        description = category_info["description"]
++        lines.append(f"## {emoji} {category_name} - {description}")
++        lines.append("")
++
++        for pr in prs:
++            number = pr["number"]
++            title = pr["title"]
++            author = pr["user"]["login"]
++            url = pr["html_url"]
++            lines.append(f"- {title} ([#{number}]({url}) by @{author})")
++        lines.append("")
++
++    lines.append("## 🧑‍💻 Contributors")
++    lines.append("")
++
++    contributors = set()
++    for pr_list in categorized.values():
++        for pr in pr_list:
++            if pr:
++                contributors.add("@" + pr["user"]["login"])
++
++    lines.append(f"This release includes contributions from **{len(contributors)} contributors**.")
++    lines.append(f"Thank you to all our contributors!")
++    lines.append("")
++    lines.append(f"Contributors: {' '.join(sorted(contributors))}")
++    lines.append("")
++
++    return "\n".join(lines)
++
++
++def format_github_release(categorized: Dict[str, List[Dict]], version: str) -> str:
++    lines = [f"ClickHouse {version} is ready!"]
++    lines.append("")
++    lines.append("## Summary")
++    lines.append("")
++
++    sorted_categories = sorted(
++        CATEGORIES.items(),
++        key=lambda x: x[1]["order"],
++    )
++
++    for category_name, category_info in sorted_categories:
++        prs = categorized.get(category_name, [])
++        if not prs or category_info.get("hide_in_release_notes", False):
++            continue
++        emoji = category_info["emoji"]
++        count = len(prs)
++        lines.append(f"- {emoji} **{category_name}**: {count} pull requests")
++    lines.append("")
++    lines.append("## Highlights")
++    lines.append("")
++    lines.append("_(Add highlights here manually before publishing)_")
++    lines.append("")
++    lines.append("## Download")
++    lines.append("")
++    lines.append(f"- [Official Website](https://clickhouse.com/downloads?version={version})")
++    lines.append(f"- [Docker](https://hub.docker.com/r/clickhouse/clickhouse-server/tags?page=1&name={version})")
++    lines.append("")
++    lines.append("## Full Changelog")
++
++    return "\n".join(lines)
++
++
++def main():
++    parser = argparse.ArgumentParser(
++        description="Generate release notes from merged PRs",
++    )
++    parser.add_argument(
++        "--from",
++        dest="from_version",
++        required=True,
++        help="Starting version (e.g., v26.4)",
++    )
++    parser.add_argument(
++        "--to",
++        dest="to_version",
++        required=True,
++        help="Ending version (e.g., v26.5)",
++    )
++    parser.add_argument(
++        "--format",
++        choices=["markdown", "github"],
++        default="markdown",
++        help="Output format",
++    )
++    parser.add_argument(
++        "--output",
++        default=None,
++        help="Output file (default: stdout)",
++    )
++    parser.add_argument(
++        "--cache-file",
++        default=None,
++        help="Cache PR data to file for faster reruns",
++    )
++    args = parser.parse_args()
++
++    if args.cache_file and Path(args.cache_file).exists():
++        print(f"Loading cached PR data from {args.cache_file}")
++        with open(args.cache_file, "r", encoding="utf-8") as f:
++            prs = json.load(f)
++    else:
++        print(f"Fetching merged PRs between {args.from_version} and {args.to_version}...")
++        prs = get_merged_prs_between(args.from_version, args.to_version)
++
++        if args.cache_file:
++            with open(args.cache_file, "w", encoding="utf-8") as f:
++                json.dump([{
++                    "number": pr["number"],
++                    "title": pr["title"],
++                    "html_url": pr["html_url"],
++                    "user": {"login": pr["user"]["login"]},
++                    "labels": pr.get("labels", []),
++                    "merged": pr.get("merged", True),
++                } for pr in prs], f, indent=2)
++
++    print(f"Found {len(prs)} merged pull requests")
++
++    categorized = categorize_prs(prs)
++
++    today = datetime.now().strftime("%B %d, %Y")
++    version_clean = args.to_version.lstrip('v')
++
++    if args.format == "markdown":
++        content = format_markdown_release_notes(categorized, version_clean, today)
++    elif args.format == "github":
++        content = format_github_release(categorized, version_clean)
++    else:
++        content = format_markdown_release_notes(categorized, version_clean, today)
++
++    if args.output:
++        with open(args.output, "w", encoding="utf-8") as f:
++            f.write(content)
++        print(f"Wrote release notes to {args.output}")
++    else:
++        print(content)
++
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
+diff --git a/tools/release/release_checklist.py b/tools/release/release_checklist.py
+new file mode 100644
+index 00000000000..1c6b1de68e9
+--- /dev/null
++++ b/tools/release/release_checklist.py
+@@ -0,0 +1,443 @@
++#!/usr/bin/env python3
++"""
++ClickHouse Monthly Release Checklist Executor
++
++Converts the release checklist from a static document into an executable,
++trackable script that validates each step of the release process.
++
++Usage:
++    python3 tools/release/release_checklist.py --month 2026-06
++    python3 tools/release/release_checklist.py --month 2026-06 --phase pre_release
++    python3 tools/release/release_checklist.py --validate
++    python3 tools/release/release_checklist.py --report
++    python3 tools/release/release_checklist.py --month 2026-06 --mark-complete tag_release  # noqa
++
++State Management:
++    - Checklist progress is stored in tools/release/.state/YYYY-MM.json
++    - Each checklist item tracks: completed, timestamp, output, notes
++"""
++
++import argparse
++import datetime
++import json
++import subprocess
++import sys
++import textwrap
++from pathlib import Path
++from typing import Dict, List, Optional, Tuple
++
++import yaml
++
++SCRIPT_DIR = Path(__file__).parent
++STATE_DIR = SCRIPT_DIR / ".state"
++
++CHECKLIST_CONFIG = SCRIPT_DIR / "release_checklist.yaml"
++
++COLOR_RED = "\033[0;31m"
++COLOR_GREEN = "\033[0;32m"
++COLOR_YELLOW = "\033[1;33m"
++COLOR_BLUE = "\033[0;34m"
++COLOR_CYAN = "\033[0;36m"
++COLOR_RESET = "\033[0m"
++
++
++class ChecklistItem:
++    def __init__(self, item_id: str, data: Dict):
++        self.id = item_id
++        self.name = data.get("name", item_id)
++        self.description = data.get("description", "")
++        self.automated = data.get("automated", False)
++        self.check_command = data.get("check_command", "")
++        self.manual_steps = data.get("manual_steps", [])
++        self.completed = False
++        self.timestamp = None
++        self.output = ""
++        self.notes = ""
++
++    def to_dict(self) -> Dict:
++        return {
++            "id": self.id,
++            "name": self.name,
++            "completed": self.completed,
++            "timestamp": self.timestamp,
++            "output": self.output,
++            "notes": self.notes,
++        }
++
++    @classmethod
++    def from_dict(cls, data: Dict) -> "ChecklistItem":
++        item = cls(data["id"], data)
++        item.completed = data.get("completed", False)
++        item.timestamp = data.get("timestamp")
++        item.output = data.get("output", "")
++        item.notes = data.get("notes", "")
++        return item
++
++
++class ReleasePhase:
++    def __init__(self, phase_id: str, data: Dict):
++        self.id = phase_id
++        self.name = data.get("name", phase_id)
++        self.order = data.get("order", 0)
++        self.responsible = data.get("responsible", "")
++        self.items: List[ChecklistItem] = []
++
++        for item_data in data.get("checklist", []):
++            item = ChecklistItem(item_data["id"], item_data)
++            self.items.append(item)
++
++    def to_dict(self) -> Dict:
++        return {
++            "id": self.id,
++            "name": self.name,
++            "items": [item.to_dict() for item in self.items],
++        }
++
++    @classmethod
++    def from_dict(cls, data: Dict) -> "ReleasePhase":
++        phase = cls(data["id"], data)
++        phase.items = [ChecklistItem.from_dict(item) for item in data.get("items", [])]
++        return phase
++
++
++def load_checklist_config() -> Dict:
++    with open(CHECKLIST_CONFIG, "r", encoding="utf-8") as f:
++        return yaml.safe_load(f)
++
++
++def get_state_file(month: str) -> Path:
++    return STATE_DIR / f"{month}.json"
++
++
++def load_state(month: str) -> Optional[Dict]:
++    state_file = get_state_file(month)
++    if not state_file.exists():
++        return None
++    with open(state_file, "r", encoding="utf-8") as f:
++        return json.load(f)
++
++
++def save_state(month: str, state: Dict) -> None:
++    STATE_DIR.mkdir(parents=True, exist_ok=True)
++    state_file = get_state_file(month)
++    state["last_updated"] = datetime.datetime.now().isoformat()
++    with open(state_file, "w", encoding="utf-8") as f:
++        json.dump(state, f, indent=2)
++
++
++def init_state(month: str, config: Dict) -> Dict:
++    state = {
++        "month": month,
++        "created_at": datetime.datetime.now().isoformat(),
++        "last_updated": datetime.datetime.now().isoformat(),
++        "phases": [],
++    }
++    for phase_data in config.get("phases", []):
++        phase = ReleasePhase(phase_data["id"], phase_data)
++        state["phases"].append(phase.to_dict())
++    return state
++
++
++def run_automated_check(item: ChecklistItem, variables: Dict) -> Tuple[bool, str]:
++    command = item.check_command
++    for key, value in variables.items():
++        command = command.replace("{" + key + "}", str(value))
++
++    try:
++        result = subprocess.run(
++            command,
++            shell=True,
++            capture_output=True,
++            text=True,
++            timeout=300,
++            cwd=SCRIPT_DIR.parent.parent,
++        )
++        output = result.stdout.strip() + "\n" + result.stderr.strip()
++        success = result.returncode == 0
++        return success, output
++    except subprocess.TimeoutExpired:
++        return False, "Command timed out after 300 seconds"
++    except Exception as e:
++        return False, f"Error executing command: {e}"
++
++
++def colorize(text: str, color: str) -> str:
++    return f"{color}{text}{COLOR_RESET}"
++
++
++def print_status_icon(completed: bool) -> str:
++    if completed:
++        return colorize("✓", COLOR_GREEN)
++    return colorize("✗", COLOR_RED)
++
++
++def print_report(state: Dict) -> None:
++    total_items = 0
++    completed_items = 0
++
++    for phase_data in state.get("phases", []):
++        phase = ReleasePhase.from_dict(phase_data)
++        phase_completed = sum(1 for item in phase.items if item.completed)
++        phase_total = len(phase.items)
++        total_items += phase_total
++        completed_items += phase_completed
++
++        icon = "✓" if phase_completed == phase_total else " "
++        print(f"\n{colorize(f'[{icon}] Phase {phase.order}: {phase.name}', COLOR_CYAN)}")
++        print(f"  Responsible: {phase.responsible}")
++        print(f"  Progress: {phase_completed}/{phase_total}")
++
++        for item in phase.items:
++            status = print_status_icon(item.completed)
++            auto_label = colorize("[AUTO]", COLOR_BLUE) if item.automated else "[MANUAL]"
++            print(f"    {status} {auto_label} {item.name}")
++            if item.notes:
++                print(f"        Notes: {item.notes}")
++            if item.timestamp:
++                print(f"        Completed: {item.timestamp}")
++
++    print(f"\n{colorize('=== Overall Progress ===', COLOR_CYAN)}")
++    print(f"Total: {completed_items}/{total_items} items completed")
++
++    if completed_items == total_items:
++        print(colorize("\nAll checklist items completed! Ready for release. ✓", COLOR_GREEN))
++    else:
++        remaining = total_items - completed_items
++        print(colorize(f"\n{remaining} items remaining. Keep going!", COLOR_YELLOW))
++
++
++def execute_checklist(state: Dict, variables: Dict, phase_filter: Optional[str] = None) -> None:
++    for phase_data in state.get("phases", []):
++        if phase_filter and phase_data["id"] != phase_filter:
++            continue
++
++        phase = ReleasePhase.from_dict(phase_data)
++        print(f"\n{colorize(f'Phase {phase.order}: {phase.name}', COLOR_CYAN)}")
++        print(f"  Responsible: {phase.responsible}")
++        print()
++
++        for item in phase.items:
++            if item.completed:
++                print(f"  {print_status_icon(True)} {item.name} (already completed)")
++                continue
++
++            print(f"  {colorize('▶', COLOR_YELLOW)} {item.name}")
++            print(f"    {item.description}")
++
++            if item.automated and item.check_command:
++                print(f"    {colorize('Running automated check...', COLOR_BLUE)}")
++                success, output = run_automated_check(item, variables)
++                item.completed = success
++                item.timestamp = datetime.datetime.now().isoformat()
++                item.output = output
++
++                if success:
++                    print(f"    {print_status_icon(True)} Passed")
++                else:
++                    print(f"    {print_status_icon(False)} Failed")
++                    if output:
++                        print(f"    Output: {output[:500]}")
++            elif item.manual_steps:
++                print(f"    {colorize('Manual steps required:', COLOR_YELLOW)}")
++                for step in item.manual_steps:
++                    print(f"      - {step}")
++                print()
++                response = input(f"    Mark as complete? (y/n): ").strip().lower()
++                if response == "y":
++                    item.completed = True
++                    item.timestamp = datetime.datetime.now().isoformat()
++                    notes = input(f"    Add notes (optional): ").strip()
++                    if notes:
++                        item.notes = notes
++                else:
++                    notes = input(f"    Add notes (optional): ").strip()
++                    if notes:
++                        item.notes = notes
++
++            # Update phase data
++            phase_data["items"] = [item.to_dict() for item in phase.items]
++
++
++def validate_config() -> bool:
++    try:
++        config = load_checklist_config()
++    except Exception as e:
++        print(f"Error loading checklist config: {e}")
++        return False
++
++    errors = []
++    for phase in config.get("phases", []):
++        if "id" not in phase:
++            errors.append(f"Phase missing 'id': {phase.get('name', 'unknown')}")
++        if "checklist" not in phase:
++            errors.append(f"Phase '{phase.get('id', 'unknown')}' missing 'checklist'")
++
++        for item in phase.get("checklist", []):
++            if "id" not in item:
++                errors.append(f"Item in '{phase.get('id')}' missing 'id'")
++            if item.get("automated") and not item.get("check_command"):
++                errors.append(
++                    f"Automated item '{item.get('id')}' in '{phase.get('id')}' "
++                    f"missing 'check_command'"
++                )
++
++    if errors:
++        print("Configuration validation FAILED:")
++        for error in errors:
++            print(f"  - {error}")
++        return False
++
++    print("Configuration validation PASSED")
++    print(f"Phases: {len(config.get('phases', []))}")
++    total_items = sum(
++        len(phase.get("checklist", [])) for phase in config.get("phases", [])
++    )
++    print(f"Total items: {total_items}")
++    return True
++
++
++def main():
++    parser = argparse.ArgumentParser(
++        description="ClickHouse Monthly Release Checklist Executor",
++        formatter_class=argparse.RawDescriptionHelpFormatter,
++        epilog=textwrap.dedent("""\
++            Examples:
++              # Start a new release checklist for June 2026
++              python3 tools/release/release_checklist.py --month 2026-06
++
++              # Run only the pre_release phase
++              python3 tools/release/release_checklist.py --month 2026-06 --phase pre_release
++
++              # View the status report
++              python3 tools/release/release_checklist.py --report --month 2026-06
++
++              # Validate the checklist configuration
++              python3 tools/release/release_checklist.py --validate
++
++              # Mark a specific item as complete
++              python3 tools/release/release_checklist.py --month 2026-06 --mark-complete verify-ci-green
++        """),
++    )
++    parser.add_argument(
++        "--month",
++        type=str,
++        default=None,
++        help="Target release month (YYYY-MM format)",
++    )
++    parser.add_argument(
++        "--phase",
++        type=str,
++        default=None,
++        help="Execute only a specific phase (e.g., pre_release, tag_release)",
++    )
++    parser.add_argument(
++        "--validate",
++        action="store_true",
++        help="Validate the checklist configuration",
++    )
++    parser.add_argument(
++        "--report",
++        action="store_true",
++        help="Show the current status report",
++    )
++    parser.add_argument(
++        "--mark-complete",
++        type=str,
++        default=None,
++        help="Mark a specific checklist item as complete",
++    )
++    parser.add_argument(
++        "--dry-run",
++        action="store_true",
++        help="Show what would be checked without executing",
++    )
++    args = parser.parse_args()
++
++    if args.validate:
++        success = validate_config()
++        sys.exit(0 if success else 1)
++
++    if args.report:
++        if not args.month:
++            months = sorted(
++                [f.stem for f in STATE_DIR.glob("*.json")],
++                reverse=True,
++            ) if STATE_DIR.exists() else []
++            if not months:
++                print("No release checklist state found. Start one with --month YYYY-MM")
++                sys.exit(1)
++            args.month = months[0]
++
++        state = load_state(args.month)
++        if state is None:
++            print(f"No state found for month {args.month}")
++            sys.exit(1)
++        print_report(state)
++        sys.exit(0)
++
++    if not args.month:
++        parser.error("--month is required (e.g., --month 2026-06)")
++
++    try:
++        datetime.datetime.strptime(args.month, "%Y-%m")
++    except ValueError:
++        parser.error("--month must be in YYYY-MM format")
++
++    if args.mark_complete:
++        state = load_state(args.month)
++        if state is None:
++            print(f"No state found for month {args.month}")
++            sys.exit(1)
++
++        found = False
++        for phase_data in state.get("phases", []):
++            phase = ReleasePhase.from_dict(phase_data)
++            for item in phase.items:
++                if item.id == args.mark_complete:
++                    item.completed = True
++                    item.timestamp = datetime.datetime.now().isoformat()
++                    found = True
++                    print(f"Marked '{item.name}' as complete")
++                phase_data["items"] = [item.to_dict() for item in phase.items]
++            if found:
++                break
++
++        if not found:
++            print(f"Checklist item '{args.mark_complete}' not found")
++            sys.exit(1)
++
++        save_state(args.month, state)
++        sys.exit(0)
++
++    config = load_checklist_config()
++    state = load_state(args.month)
++
++    if state is None:
++        print(f"Initializing new release checklist for {args.month}")
++        state = init_state(args.month, config)
++        save_state(args.month, state)
++
++    if args.dry_run:
++        print(f"\nDry run for {args.month}:")
++        for phase_data in state.get("phases", []):
++            phase = ReleasePhase.from_dict(phase_data)
++            print(f"\n  Phase: {phase.name}")
++            for item in phase.items:
++                auto_label = "[AUTO]" if item.automated else "[MANUAL]"
++                print(f"    {auto_label} {item.name}")
++        sys.exit(0)
++
++    variables = {
++        "month": args.month,
++        "branch": f"{args.month[:4]}.{int(args.month[5:])}",
++        "version": getattr(args, "version", args.month),
++        "previous_version": getattr(args, "previous_version", ""),
++    }
++
++    execute_checklist(state, variables, args.phase)
++    save_state(args.month, state)
++    print_report(state)
++
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
+diff --git a/tools/release/release_checklist.yaml b/tools/release/release_checklist.yaml
+new file mode 100644
+index 00000000000..1ff4b976911
+--- /dev/null
++++ b/tools/release/release_checklist.yaml
+@@ -0,0 +1,187 @@
++# ClickHouse Monthly Release Checklist
++# 
++# This file defines the checklist items for the monthly release process.
++# It is consumed by the release_checklist.py script.
++#
++# Usage:
++#   python3 tools/release/release_checklist.py --month 2026-06
++#   python3 tools/release/release_checklist.py --validate
++#   python3 tools/release/release_checklist.py --report
++
++version: 1
++release_cadence: monthly
++
++phases:
++  - id: pre_release
++    name: "Pre-Release Preparation"
++    order: 1
++    responsible: "Release Manager"
++    checklist:
++      - id: "verify-ci-green"
++        name: "Verify CI is green on the release branch"
++        description: "Check that all CI workflows for the release branch have passed"
++        automated: true
++        check_command: "python3 ci/defs/defs.py --check-branch {branch}"
++
++      - id: "review-changelog"
++        name: "Review and categorize changelog entries"
++        description: "Ensure all merged PRs have proper changelog categories"
++        automated: true
++        check_command: "python3 tests/ci/changelog.py --check-branch {branch}"
++
++      - id: "check-documentation"
++        name: "Verify documentation PRs are merged"
++        description: "Check that all documentation updates for new features are in"
++        automated: true
++        check_command: "python3 -m ci.jobs.docs_job --check-sync"
++
++      - id: "version-bump"
++        name: "Bump version numbers"
++        description: "Update version in all relevant files (CMakeLists.txt, etc.)"
++        automated: true
++        check_command: "python3 tests/ci/version_helper.py --bump {branch}"
++
++      - id: "security-review"
++        name: "Review security changelog"
++        description: "Check for any pending security fixes to include"
++        automated: false
++        manual_steps:
++          - "Review SECURITY.md for any pending advisories"
++          - "Check Bugcrowd for unresolved reports"
++          - "Verify all security patches are cherry-picked"
++
++      - id: "backward-compat"
++        name: "Check backward compatibility"
++        description: "Run backward compatibility tests against previous release"
++        automated: true
++        check_command: "python3 ci/jobs/compatibility_check.py --previous-version {previous_version}"
++
++      - id: "performance-benchmark"
++        name: "Performance benchmark comparison"
++        description: "Run performance benchmarks and compare with previous release"
++        automated: true
++        check_command: "python3 ci/jobs/performance_tests.py --compare-with {previous_version}"
++
++  - id: tag_release
++    name: "Tag and Build Release"
++    order: 2
++    responsible: "Release Manager"
++    checklist:
++      - id: "create-tag"
++        name: "Create the release tag"
++        description: "Tag the release commit with the version number"
++        automated: true
++        check_command: "python3 tests/ci/create_release.py --prepare-release-info --ref {branch} --release-type patch"
++
++      - id: "build-binaries"
++        name: "Build binary packages"
++        description: "Trigger binary builds for all platforms"
++        automated: true
++        check_command: "gh workflow run create_release.yml --ref {branch} --field type=patch"
++
++      - id: "verify-signatures"
++        name: "Verify package signatures"
++        description: "Ensure all packages are properly signed"
++        automated: false
++        manual_steps:
++          - "Download all packages from the release"
++          - "Verify GPG signatures for each package"
++          - "Check SHA256 checksums"
++
++      - id: "docker-build"
++        name: "Build Docker images"
++        description: "Build and push Docker images for the release"
++        automated: true
++        check_command: "python3 tests/ci/official_docker.py --version {version}"
++
++      - id: "install-test"
++        name: "Test installation from packages"
++        description: "Verify that packages install correctly on all supported platforms"
++        automated: true
++        check_command: "python3 ci/jobs/install_check.py --version {version}"
++
++  - id: post_release
++    name: "Post-Release Tasks"
++    order: 3
++    responsible: "Release Manager & Community"
++    checklist:
++      - id: "update-website"
++        name: "Update clickhouse.com download page"
++        description: "Update the download links on the official website"
++        automated: false
++        manual_steps:
++          - "Update download page with new version"
++          - "Update the quick install command if needed"
++          - "Verify the installation page reflects the new version"
++
++      - id: "announce-release"
++        name: "Announce the release"
++        description: "Publish release announcement across all channels"
++        automated: false
++        manual_steps:
++          - "Post on clickhouse.com/blog"
++          - "Post on Slack #announcements channel"
++          - "Post on Telegram channels"
++          - "Post on Bluesky and X (Twitter)"
++          - "Post on LinkedIn"
++
++      - id: "schedule-call"
++        name: "Schedule community release call"
++        description: "Set up the monthly community release call"
++        automated: false
++        manual_steps:
++          - "Create event page on clickhouse.com"
++          - "Update README.md with the new release call link"
++          - "Send calendar invites"
++          - "Prepare presentation slides"
++
++      - id: "update-security"
++        name: "Update security policy"
++        description: "Update SECURITY.md with supported versions"
++        automated: true
++        check_command: "python3 utils/security-generator/generate_security.py --update"
++
++      - id: "close-milestone"
++        name: "Close GitHub milestone"
++        description: "Close the GitHub milestone for this release"
++        automated: true
++        check_command: "gh api repos/ClickHouse/ClickHouse/milestones --jq '.[].number' | xargs -I{} gh milestone close {}"
++
++      - id: "auto-release-check"
++        name: "Configure auto-release for next month"
++        description: "Verify auto-release pipeline is correctly configured"
++        automated: true
++        check_command: "python3 tests/ci/auto_release.py --prepare --post-status"
++
++  - id: retrospective
++    name: "Release Retrospective"
++    order: 4
++    responsible: "Release Manager"
++    checklist:
++      - id: "collect-metrics"
++        name: "Collect release metrics"
++        description: "Gather metrics about the release cycle"
++        automated: false
++        manual_steps:
++          - "Number of PRs included"
++          - "Number of contributors"
++          - "Build time and CI success rate"
++          - "Number of issues resolved"
++
++      - id: "review-issues"
++        name: "Review release issues"
++        description: "Go through issues that were reported during the release"
++        automated: false
++        manual_steps:
++          - "Review any deployment issues reported"
++          - "Document lessons learned"
++          - "Create action items for process improvement"
++
++      - id: "update-checklist"
++        name: "Update this checklist"
++        description: "Update the release checklist based on lessons learned"
++        automated: false
++        manual_steps:
++          - "Review if any steps need to be added or modified"
++          - "Update automation for any new automated steps"
++          - "Commit changes to tools/release/release_checklist.yaml"
+\ No newline at end of file
+diff --git a/tools/toolchain/CMakeLists.txt b/tools/toolchain/CMakeLists.txt
+new file mode 100644
+index 00000000000..81d21e53466
+--- /dev/null
++++ b/tools/toolchain/CMakeLists.txt
+@@ -0,0 +1,5 @@
++cmake_minimum_required(VERSION 3.16)
++project(clickhouse-toolchain)
++
++add_subdirectory(installer)
++add_subdirectory(verifier)
+diff --git a/tools/toolchain/installer/CMakeLists.txt b/tools/toolchain/installer/CMakeLists.txt
+new file mode 100644
+index 00000000000..4faf8c3bb2a
+--- /dev/null
++++ b/tools/toolchain/installer/CMakeLists.txt
+@@ -0,0 +1,8 @@
++add_executable(clickhouse-install Install.cpp)
++target_link_libraries(clickhouse-install PRIVATE clickhouse_common_io clickhouse_common_config clickhouse_common_zlib OpenSSL::SSL Boost::program_options fmt::fmt)
++
++if (TARGET clickhouse-common-static)
++    target_link_libraries(clickhouse-install PRIVATE clickhouse-common-static)
++endif()
++
++install(TARGETS clickhouse-install RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+diff --git a/tools/toolchain/installer/README.md b/tools/toolchain/installer/README.md
+new file mode 100644
+index 00000000000..006fd92b89b
+--- /dev/null
++++ b/tools/toolchain/installer/README.md
+@@ -0,0 +1,41 @@
++# ClickHouse Installer Toolchain
++
++This directory contains the installation tooling for ClickHouse.
++
++## Overview
++
++The installer toolchain provides:
++- Automated installation from binary packages
++- System configuration and user/group creation
++- Default configuration file generation
++- Capability and permission setup
++- Service registration (systemd, upstart, sysv)
++
++## Components
++
++- `clickhouse-install` - Main installation binary
++- `install-scripts/` - Helper shell scripts for different distributions
++- `templates/` - Configuration file templates
++
++## Usage
++
++```bash
++# Install ClickHouse from a downloaded binary
++./clickhouse-install [OPTIONS]
++
++# Options:
++#   --prefix PATH         Installation prefix (default: /usr)
++#   --user USER            User name (default: clickhouse)
++#   --group GROUP          Group name (default: clickhouse)
++#   --no-systemd           Skip systemd service installation
++#   --dry-run              Show what would be done
++```
++
++## Building
++
++Build as part of the full ClickHouse build:
++
++```bash
++cmake .. -DENABLE_TOOLCHAIN=ON
++make clickhouse-install
++```
+diff --git a/tools/toolchain/installer/install.sh b/tools/toolchain/installer/install.sh
+new file mode 100644
+index 00000000000..4d92d0b21e7
+--- /dev/null
++++ b/tools/toolchain/installer/install.sh
+@@ -0,0 +1,313 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# ClickHouse Installation Toolchain Script
++# This script provides a standalone installation mechanism for ClickHouse
++# that can be used independently of the curl-pipe-sh pattern.
++
++readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++readonly DEFAULT_PREFIX="/usr"
++readonly DEFAULT_USER="clickhouse"
++readonly DEFAULT_GROUP="clickhouse"
++readonly DEFAULT_DATA_DIR="/var/lib/clickhouse"
++readonly DEFAULT_LOG_DIR="/var/log/clickhouse-server"
++readonly DEFAULT_CONFIG_DIR="/etc/clickhouse-server"
++
++readonly CH_VERSION="${CH_VERSION:-latest}"
++readonly CH_ARCH="${CH_ARCH:-amd64}"
++readonly CH_OS="${CH_OS:-linux}"
++
++# Colors for output
++readonly RED='\033[0;31m'
++readonly GREEN='\033[0;32m'
++readonly YELLOW='\033[1;33m'
++readonly NC='\033[0m'
++
++log_info() {
++    echo -e "${GREEN}[INFO]${NC} $*"
++}
++
++log_warn() {
++    echo -e "${YELLOW}[WARN]${NC} $*"
++}
++
++log_error() {
++    echo -e "${RED}[ERROR]${NC} $*" >&2
++}
++
++check_prerequisites() {
++    log_info "Checking prerequisites..."
++
++    local missing=()
++
++    for cmd in curl tar chown id systemctl; do
++        if ! command -v "$cmd" &>/dev/null; then
++            missing+=("$cmd")
++        fi
++    done
++
++    if [[ ${#missing[@]} -gt 0 ]]; then
++        log_error "Missing required commands: ${missing[*]}"
++        exit 1
++    fi
++
++    if [[ $EUID -ne 0 ]]; then
++        log_error "This script must be run as root"
++        exit 1
++    fi
++
++    log_info "All prerequisites satisfied"
++}
++
++download_binary() {
++    local version="$1"
++    local arch="$2"
++    local os="$3"
++    local dest="$4"
++
++    local url="https://builds.clickhouse.com/${os}/${arch}/clickhouse-${version}-${arch}.tgz"
++
++    log_info "Downloading ClickHouse ${version} for ${os}/${arch}..."
++    log_info "URL: ${url}"
++
++    curl -fsSL "${url}" -o "${dest}/clickhouse.tgz" || {
++        log_error "Failed to download ClickHouse binary"
++        exit 1
++    }
++
++    tar -xzf "${dest}/clickhouse.tgz" -C "${dest}" || {
++        log_error "Failed to extract ClickHouse archive"
++        exit 1
++    }
++
++    rm -f "${dest}/clickhouse.tgz"
++    log_info "Download and extraction complete"
++}
++
++create_user_and_group() {
++    local user="$1"
++    local group="$2"
++
++    if ! getent group "$group" >/dev/null; then
++        log_info "Creating group: ${group}"
++        groupadd --system "$group"
++    else
++        log_info "Group ${group} already exists"
++    fi
++
++    if ! getent passwd "$user" >/dev/null; then
++        log_info "Creating user: ${user}"
++        useradd --system --no-create-home --shell /bin/false \
++            --gid "$group" "$user"
++    else
++        log_info "User ${user} already exists"
++    fi
++}
++
++create_directories() {
++    log_info "Creating directories..."
++
++    mkdir -p "${DEFAULT_CONFIG_DIR}/conf.d"
++    mkdir -p "${DEFAULT_CONFIG_DIR}/users.d"
++    mkdir -p "${DEFAULT_DATA_DIR}"
++    mkdir -p "${DEFAULT_LOG_DIR}"
++
++    chown -R "${DEFAULT_USER}:${DEFAULT_GROUP}" "${DEFAULT_DATA_DIR}"
++    chown -R "${DEFAULT_USER}:${DEFAULT_GROUP}" "${DEFAULT_LOG_DIR}"
++}
++
++install_binaries() {
++    local prefix="$1"
++    local src="$2"
++
++    log_info "Installing binaries to ${prefix}/bin..."
++
++    mkdir -p "${prefix}/bin"
++
++    cp "${src}/clickhouse" "${prefix}/bin/clickhouse"
++    chmod 755 "${prefix}/bin/clickhouse"
++
++    pushd "${prefix}/bin" >/dev/null
++    for tool in clickhouse-server clickhouse-client clickhouse-local \
++                clickhouse-benchmark clickhouse-keeper clickhouse-keeper-client \
++                clickhouse-compressor clickhouse-obfuscator clickhouse-format \
++                clickhouse-extract-from-config; do
++        ln -sf clickhouse "$tool"
++    done
++    popd >/dev/null
++}
++
++install_service_systemd() {
++    local service_file="/etc/systemd/system/clickhouse-server.service"
++
++    log_info "Installing systemd service..."
++
++    cat > "$service_file" << 'EOF'
++[Unit]
++Description=ClickHouse Server (Analytics DBMS)
++Documentation=https://clickhouse.com/docs/
++After=network.target
++
++[Service]
++Type=notify
++User=clickhouse
++Group=clickhouse
++Restart=always
++RestartSec=30
++RuntimeDirectory=clickhouse-server
++ExecStart=/usr/bin/clickhouse-server --config=/etc/clickhouse-server/config.xml --pid-file=/run/clickhouse-server/clickhouse-server.pid
++LimitNOFILE=500000
++LimitNPROC=500000
++LimitCORE=infinity
++CapabilityBoundingSet=CAP_NET_ADMIN CAP_IPC_LOCK CAP_SYS_NICE CAP_NET_BIND_SERVICE
++AmbientCapabilities=CAP_NET_ADMIN CAP_IPC_LOCK CAP_SYS_NICE CAP_NET_BIND_SERVICE
++NoNewPrivileges=true
++
++[Install]
++WantedBy=multi-user.target
++EOF
++
++    systemctl daemon-reload
++    log_info "Systemd service installed"
++}
++
++verify_installation() {
++    log_info "Verifying installation..."
++
++    local errors=0
++
++    for binary in clickhouse clickhouse-server clickhouse-client; do
++        if [[ -x "/usr/bin/${binary}" ]]; then
++            log_info "  ✓ ${binary} is installed"
++        else
++            log_error "  ✗ ${binary} is missing"
++            errors=$((errors + 1))
++        fi
++    done
++
++    for dir in "${DEFAULT_CONFIG_DIR}" "${DEFAULT_DATA_DIR}" "${DEFAULT_LOG_DIR}"; do
++        if [[ -d "$dir" ]]; then
++            log_info "  ✓ Directory ${dir} exists"
++        else
++            log_error "  ✗ Directory ${dir} is missing"
++            errors=$((errors + 1))
++        fi
++    done
++
++    if [[ $errors -eq 0 ]]; then
++        log_info "Installation verification PASSED"
++    else
++        log_error "Installation verification FAILED (${errors} errors)"
++        exit 1
++    fi
++}
++
++print_post_install() {
++    echo ""
++    echo "============================================"
++    echo "  ClickHouse Installation Complete!"
++    echo "============================================"
++    echo ""
++    echo "  Start the server:"
++    echo "    sudo systemctl start clickhouse-server"
++    echo ""
++    echo "  Connect with client:"
++    echo "    clickhouse-client"
++    echo ""
++    echo "  Check server status:"
++    echo "    sudo systemctl status clickhouse-server"
++    echo ""
++    echo "  Documentation: https://clickhouse.com/docs/"
++    echo "============================================"
++}
++
++usage() {
++    cat << EOF
++Usage: $0 [OPTIONS]
++
++Install ClickHouse from pre-built binaries.
++
++Options:
++    --prefix PATH          Installation prefix (default: ${DEFAULT_PREFIX})
++    --user USER            System user (default: ${DEFAULT_USER})
++    --group GROUP          System group (default: ${DEFAULT_GROUP})
++    --version VERSION      ClickHouse version (default: ${CH_VERSION})
++    --arch ARCH            Architecture (default: ${CH_ARCH})
++    --local FILE           Install from local binary file
++    --no-systemd           Skip systemd service installation
++    --dry-run              Show what would be done without doing it
++    -h, --help             Show this help message
++
++Environment variables:
++    CH_VERSION             ClickHouse version to install
++    CH_ARCH                Target architecture
++    CH_OS                  Target OS
++
++Examples:
++    # Install latest version
++    sudo $0
++
++    # Install specific version
++    sudo $0 --version 24.8.1.2684
++
++    # Install from a local binary
++    sudo $0 --local ./clickhouse
++EOF
++}
++
++main() {
++    local prefix="${DEFAULT_PREFIX}"
++    local user="${DEFAULT_USER}"
++    local group="${DEFAULT_GROUP}"
++    local version="${CH_VERSION}"
++    local arch="${CH_ARCH}"
++    local local_file=""
++    local skip_systemd=false
++    local dry_run=false
++
++    while [[ $# -gt 0 ]]; do
++        case "$1" in
++            --prefix) prefix="$2"; shift 2 ;;
++            --user) user="$2"; shift 2 ;;
++            --group) group="$2"; shift 2 ;;
++            --version) version="$2"; shift 2 ;;
++            --arch) arch="$2"; shift 2 ;;
++            --local) local_file="$2"; shift 2 ;;
++            --no-systemd) skip_systemd=true; shift ;;
++            --dry-run) dry_run=true; shift ;;
++            -h|--help) usage; exit 0 ;;
++            *) log_error "Unknown option: $1"; usage; exit 1 ;;
++        esac
++    done
++
++    if [[ "$dry_run" == "true" ]]; then
++        log_info "DRY RUN: Would install ClickHouse ${version} for ${arch} to ${prefix}"
++        exit 0
++    fi
++
++    check_prerequisites
++
++    local tmpdir
++    tmpdir="$(mktemp -d "/tmp/clickhouse-install.XXXXXXXX")"
++    trap 'rm -rf "$tmpdir"' EXIT
++
++    if [[ -n "$local_file" ]]; then
++        log_info "Using local binary: ${local_file}"
++        cp "$local_file" "${tmpdir}/clickhouse"
++    else
++        download_binary "$version" "$arch" "$CH_OS" "$tmpdir"
++    fi
++
++    create_user_and_group "$user" "$group"
++    create_directories
++    install_binaries "$prefix" "$tmpdir"
++
++    if [[ "$skip_systemd" != "true" ]]; then
++        install_service_systemd
++    fi
++
++    verify_installation
++    print_post_install
++}
++
++main "$@"
+\ No newline at end of file
+diff --git a/tools/toolchain/installer/templates/config.xml b/tools/toolchain/installer/templates/config.xml
+new file mode 100644
+index 00000000000..5bf5dea83c2
+--- /dev/null
++++ b/tools/toolchain/installer/templates/config.xml
+@@ -0,0 +1,41 @@
++<?xml version="1.0"?>
++<!--
++  ClickHouse default configuration
++  Generated by clickhouse-install toolchain
++-->
++<clickhouse>
++    <logger>
++        <level>information</level>
++        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
++        <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
++        <size>1000M</size>
++        <count>10</count>
++    </logger>
++
++    <http_port>8123</http_port>
++    <tcp_port>9000</tcp_port>
++    <mysql_port>9004</mysql_port>
++    <postgresql_port>9005</postgresql_port>
++
++    <listen_host>0.0.0.0</listen_host>
++
++    <default_profile>default</default_profile>
++
++    <system_profile>default</system_profile>
++
++    <default_database>default</default_database>
++
++    <uncompressed_cache_size>8589934592</uncompressed_cache_size>
++    <mark_cache_size>5368709120</mark_cache_size>
++
++    <path>/var/lib/clickhouse/</path>
++    <tmp_path>/tmp/clickhouse/</tmp_path>
++
++    <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
++
++    <pid_file>/var/run/clickhouse-server/clickhouse-server.pid</pid_file>
++
++    <timezone>UTC</timezone>
++
++    <max_server_memory_usage>0</max_server_memory_usage>
++</clickhouse>
+diff --git a/tools/toolchain/installer/templates/users.xml b/tools/toolchain/installer/templates/users.xml
+new file mode 100644
+index 00000000000..3b17223369e
+--- /dev/null
++++ b/tools/toolchain/installer/templates/users.xml
+@@ -0,0 +1,38 @@
++<?xml version="1.0"?>
++<!--
++  ClickHouse default users configuration
++  Generated by clickhouse-install toolchain
++-->
++<clickhouse>
++    <users>
++        <default>
++            <password></password>
++            <networks>
++                <ip>::/0</ip>
++            </networks>
++            <profile>default</profile>
++            <quota>default</quota>
++        </default>
++    </users>
++
++    <profiles>
++        <default>
++            <max_memory_usage>10000000000</max_memory_usage>
++            <use_uncompressed_cache>0</use_uncompressed_cache>
++            <load_balancing>random</load_balancing>
++        </default>
++    </profiles>
++
++    <quotas>
++        <default>
++            <interval>
++                <duration>3600</duration>
++                <queries>0</queries>
++                <errors>0</errors>
++                <result_rows>0</result_rows>
++                <read_rows>0</read_rows>
++                <execution_time>0</execution_time>
++            </interval>
++        </default>
++    </quotas>
++</clickhouse>
+diff --git a/tools/toolchain/verifier/CMakeLists.txt b/tools/toolchain/verifier/CMakeLists.txt
+new file mode 100644
+index 00000000000..b7c307c4ebe
+--- /dev/null
++++ b/tools/toolchain/verifier/CMakeLists.txt
+@@ -0,0 +1,3 @@
++add_executable(clickhouse-install-verify InstallVerify.cpp)
++target_link_libraries(clickhouse-install-verify PRIVATE clickhouse_common_io fmt::fmt)
++install(TARGETS clickhouse-install-verify RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+diff --git a/tools/toolchain/verifier/InstallVerify.cpp b/tools/toolchain/verifier/InstallVerify.cpp
+new file mode 100644
+index 00000000000..d8a89ffd862
+--- /dev/null
++++ b/tools/toolchain/verifier/InstallVerify.cpp
+@@ -0,0 +1,92 @@
++#include <iostream>
++#include <filesystem>
++#include <vector>
++#include <string>
++
++#include <fmt/format.h>
++
++namespace fs = std::filesystem;
++
++struct CheckResult
++{
++    bool passed;
++    std::string message;
++};
++
++std::vector<CheckResult> checkInstallation(const std::string & prefix)
++{
++    std::vector<CheckResult> results;
++
++    const std::vector<std::string> required_binaries = {
++        prefix + "/usr/bin/clickhouse",
++        prefix + "/usr/bin/clickhouse-server",
++        prefix + "/usr/bin/clickhouse-client"
++    };
++
++    const std::vector<std::string> required_directories = {
++        prefix + "/etc/clickhouse-server",
++        prefix + "/var/lib/clickhouse",
++        prefix + "/var/log/clickhouse-server"
++    };
++
++    for (const auto & binary : required_binaries)
++    {
++        if (!fs::exists(binary))
++            results.push_back({false, fmt::format("Missing binary: {}", binary)});
++        else if (!fs::is_regular_file(binary))
++            results.push_back({false, fmt::format("Not a regular file: {}", binary)});
++        else
++            results.push_back({true, fmt::format("Found binary: {}", binary)});
++    }
++
++    for (const auto & dir : required_directories)
++    {
++        if (!fs::exists(dir))
++            results.push_back({false, fmt::format("Missing directory: {}", dir)});
++        else if (!fs::is_directory(dir))
++            results.push_back({false, fmt::format("Not a directory: {}", dir)});
++        else
++            results.push_back({true, fmt::format("Found directory: {}", dir)});
++    }
++
++    return results;
++}
++
++int main(int argc, char ** argv)
++{
++    std::string prefix = "";
++    if (argc > 1)
++        prefix = argv[1];
++
++    auto results = checkInstallation(prefix);
++
++    int passed = 0;
++    int failed = 0;
++
++    for (const auto & result : results)
++    {
++        if (result.passed)
++        {
++            fmt::print("✓ {}\n", result.message);
++            passed++;
++        }
++        else
++        {
++            fmt::print("✗ {}\n", result.message);
++            failed++;
++        }
++    }
++
++    fmt::print("\n=== Summary ===\n");
++    fmt::print("Total: {}, Passed: {}, Failed: {}\n",
++               results.size(), passed, failed);
++
++    if (failed > 0)
++    {
++        fmt::print("\nInstallation verification FAILED\n");
++        return 1;
++    }
++
++    fmt::print("\nInstallation verification PASSED\n");
++    return 0;
++}
