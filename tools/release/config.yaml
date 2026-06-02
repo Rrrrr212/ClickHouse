@@ -1,0 +1,52 @@
+# ClickHouse Release Configuration
+
+repo:
+  owner: ClickHouse
+  name: ClickHouse
+  default_branch: master
+
+release:
+  types:
+    - new
+    - patch
+  default_type: patch
+
+branches:
+  prefix: release
+  stable_branch_prefix: v
+  
+notifications:
+  slack:
+    enabled: true
+    channel: "#clickhouse-releases"
+  email:
+    enabled: true
+    recipients:
+      - dev@clickhouse.com
+
+checklist:
+  required:
+    - ci_status
+    - documentation
+    - performance
+    - security
+    - release_notes
+    - community_announcement
+  optional:
+    - extra_tests
+    - performance_regression_check
+
+paths:
+  docs: docs/
+  changelogs: docs/changelogs/
+  security: SECURITY.md
+
+artifacts:
+  packages:
+    - tgz
+    - deb
+    - rpm
+  docker:
+    - server
+    - keeper
+    - client
