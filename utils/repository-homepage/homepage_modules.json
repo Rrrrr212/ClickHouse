@@ -1,0 +1,46 @@
+{
+  "modules": [
+    {
+      "id": "readme",
+      "title": "Repository homepage",
+      "owner": "repository",
+      "source": "README.md",
+      "purpose": "Top-level navigation for contributors and users"
+    },
+    {
+      "id": "contributing",
+      "title": "Contribution guide",
+      "owner": "repository",
+      "source": "CONTRIBUTING.md",
+      "purpose": "Contributor entry point and legal/development references"
+    },
+    {
+      "id": "documentation",
+      "title": "Documentation hub",
+      "owner": "clickhouse-docs",
+      "source": "https://clickhouse.com/docs/",
+      "purpose": "Detailed user and developer documentation"
+    },
+    {
+      "id": "installation",
+      "title": "Installation toolchain",
+      "owner": "distribution",
+      "source": "https://clickhouse.com/ | sh",
+      "purpose": "Bootstrap entry point that should stay outside repository homepage prose"
+    },
+    {
+      "id": "community",
+      "title": "Community channels",
+      "owner": "community",
+      "source": "utils/repository-homepage/community_channels.json",
+      "purpose": "Structured source of truth for external community links"
+    },
+    {
+      "id": "release",
+      "title": "Monthly release",
+      "owner": "release engineering",
+      "source": "utils/repository-homepage/release_checklist.json",
+      "purpose": "Executable release readiness checks for homepage and CI automation"
+    }
+  ]
+}
