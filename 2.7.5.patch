@@ -1,0 +1,809 @@
+diff --git a/community/config.yaml b/community/config.yaml
+new file mode 100644
+index 00000000000..d5f18e55b33
+--- /dev/null
++++ b/community/config.yaml
+@@ -0,0 +1,109 @@
++community:
++  links:
++    - name: "Official Website"
++      url: "https://clickhouse.com/"
++      description: "Quick high-level overview of ClickHouse on the main page."
++      category: "primary"
++
++    - name: "ClickHouse Cloud"
++      url: "https://clickhouse.cloud"
++      description: "ClickHouse as a service, built by the creators and maintainers."
++      category: "primary"
++
++    - name: "Tutorial"
++      url: "https://clickhouse.com/docs/getting_started/tutorial/"
++      description: "Shows how to set up and query a small ClickHouse cluster."
++      category: "docs"
++
++    - name: "Documentation"
++      url: "https://clickhouse.com/docs/"
++      description: "Provides more in-depth information."
++      category: "docs"
++
++    - name: "YouTube"
++      url: "https://www.youtube.com/c/ClickHouseDB"
++      description: "Has a lot of content about ClickHouse in video format."
++      category: "social"
++
++    - name: "ClickHouse Theater"
++      url: "https://presentations.clickhouse.com/"
++      description: "Contains presentations and videos about ClickHouse."
++      category: "media"
++
++    - name: "Slack"
++      url: "https://clickhouse.com/slack"
++      description: "Chat with ClickHouse users in real-time."
++      category: "chat"
++
++    - name: "Telegram"
++      url: "https://telegram.me/clickhouse_en"
++      description: "Chat with ClickHouse users in real-time."
++      category: "chat"
++
++    - name: "Blog"
++      url: "https://clickhouse.com/blog/"
++      description: "Various ClickHouse-related articles, as well as announcements and reports about events."
++      category: "media"
++
++    - name: "Bluesky"
++      url: "https://bsky.app/profile/clickhouse.com"
++      description: "Short news on Bluesky."
++      category: "social"
++
++    - name: "X"
++      url: "https://x.com/ClickHouseDB"
++      description: "Short news on X."
++      category: "social"
++
++    - name: "Code Browser"
++      url: "https://github.dev/ClickHouse/ClickHouse"
++      description: "Code browser with syntax highlighting, powered by github.dev."
++      category: "development"
++
++    - name: "Contacts"
++      url: "https://clickhouse.com/company/contact"
++      description: "Can help to get your questions answered if there are any."
++      category: "primary"
++
++    - name: "YouTube Playlist"
++      url: "https://www.youtube.com/playlist?list=PL0Z2YDlm0b3jAlSy1JxyP8zluvXaN3nxU"
++      description: "Release presentations and videos playlist."
++      category: "media"
++
++    - name: "Meetup Playlist"
++      url: "https://www.youtube.com/playlist?list=PL0Z2YDlm0b3iNDUzpY1S3L_iV4nARda_U"
++      description: "Recordings of the ClickHouse Community Meetups."
++      category: "media"
++
++    - name: "Events"
++      url: "https://clickhouse.com/company/news-events"
++      description: "All upcoming trainings, meetups, speaking engagements, etc."
++      category: "events"
++
++    - name: "Careers"
++      url: "https://clickhouse.com/company/careers"
++      description: "Current job openings at ClickHouse."
++      category: "primary"
++
++release:
++  next:
++    version: "26.5"
++    date: "2026-05-21"
++    event_url: "https://clickhouse.com/company/events/v26-5-community-release-call"
++  schedule:
++    - version: "26.6"
++      date: "2026-06-18"
++    - version: "26.7"
++      date: "2026-07-16"
++
++install:
++  channels:
++    - name: "stable"
++      description: "Latest stable release recommended for production"
++      url_template: "https://builds.clickhouse.com/stable/{platform}/clickhouse"
++    - name: "lts"
++      description: "Long-term support release for maximum stability"
++      url_template: "https://builds.clickhouse.com/lts/{platform}/clickhouse"
++    - name: "testing"
++      description: "Latest build from master branch (may be unstable)"
++      url_template: "https://builds.clickhouse.com/master/{platform}/clickhouse"
+diff --git a/tools/install.sh b/tools/install.sh
+new file mode 100644
+index 00000000000..bc32eb7f1c4
+--- /dev/null
++++ b/tools/install.sh
+@@ -0,0 +1,317 @@
++#!/bin/sh -e
++
++set -e
++
++PROGRAM_NAME="ClickHouse Installer"
++DEFAULT_CHANNEL="stable"
++VALID_CHANNELS="stable lts testing"
++
++VERSION=""
++CHANNEL="${DEFAULT_CHANNEL}"
++INSTALL_DIR=""
++SKIP_CHCTL=""
++ONLY_BINARY=""
++YES=""
++
++usage()
++{
++    cat <<EOF
++Usage: $(basename "$0") [OPTIONS]
++
++Install ClickHouse binary for Linux, macOS, or FreeBSD.
++
++Options:
++  --version VERSION   Install a specific version (e.g. 24.8.4.13, 25.3)
++                      If omitted, the latest version for the selected channel is installed.
++  --channel CHANNEL   Release channel: stable, lts, testing
++                      Default: ${DEFAULT_CHANNEL}
++  --install-dir DIR   Directory to install the binary into (default: current directory)
++  --skip-chctl        Skip clickhousectl installation
++  --only-binary       Only download the clickhouse binary, skip clickhousectl
++  -y, --yes           Answer yes to all prompts (non-interactive mode)
++  -h, --help          Show this help message
++
++Examples:
++  $(basename "$0")                           # Latest stable
++  $(basename "$0") --channel lts             # Latest LTS
++  $(basename "$0") --channel testing         # Latest testing (master)
++  $(basename "$0") --version 24.8.4.13       # Specific version (stable)
++  $(basename "$0") --version 25.3 --channel lts  # Specific version from LTS channel
++EOF
++}
++
++parse_args()
++{
++    while [ $# -gt 0 ]; do
++        case "$1" in
++            --version)
++                if [ -z "$2" ] || echo "$2" | grep -q '^--'; then
++                    echo "Error: --version requires a value" >&2
++                    exit 1
++                fi
++                VERSION="$2"
++                shift 2
++                ;;
++            --channel)
++                if [ -z "$2" ] || echo "$2" | grep -q '^--'; then
++                    echo "Error: --channel requires a value" >&2
++                    exit 1
++                fi
++                CHANNEL="$2"
++                shift 2
++                ;;
++            --install-dir)
++                if [ -z "$2" ] || echo "$2" | grep -q '^--'; then
++                    echo "Error: --install-dir requires a value" >&2
++                    exit 1
++                fi
++                INSTALL_DIR="$2"
++                shift 2
++                ;;
++            --skip-chctl)
++                SKIP_CHCTL=1
++                shift
++                ;;
++            --only-binary)
++                ONLY_BINARY=1
++                shift
++                ;;
++            -y|--yes)
++                YES=1
++                shift
++                ;;
++            -h|--help)
++                usage
++                exit 0
++                ;;
++            *)
++                echo "Error: Unknown option: $1" >&2
++                usage >&2
++                exit 1
++                ;;
++        esac
++    done
++}
++
++validate_channel()
++{
++    for c in ${VALID_CHANNELS}; do
++        if [ "${CHANNEL}" = "${c}" ]; then
++            return 0
++        fi
++    done
++    echo "Error: Invalid channel '${CHANNEL}'. Valid channels: ${VALID_CHANNELS}" >&2
++    exit 1
++}
++
++detect_platform()
++{
++    OS=$(uname -s)
++    ARCH=$(uname -m)
++    DIR=
++
++    if [ "${OS}" = "Linux" ]; then
++        if [ "${ARCH}" = "x86_64" ] || [ "${ARCH}" = "amd64" ]; then
++            HAS_SSE42=$(grep sse4_2 /proc/cpuinfo 2>/dev/null || true)
++            if [ -n "${HAS_SSE42}" ]; then
++                if ldd --version 2>&1 | grep -q musl; then
++                    DIR="amd64musl"
++                else
++                    DIR="amd64"
++                fi
++            else
++                DIR="amd64compat"
++            fi
++        elif [ "${ARCH}" = "aarch64" ] || [ "${ARCH}" = "arm64" ]; then
++            HAS_ARMV82=$(grep -m 1 'Features' /proc/cpuinfo 2>/dev/null | awk '/asimd/ && /sha1/ && /aes/ && /atomics/ && /lrcpc/' || true)
++            if [ -n "${HAS_ARMV82}" ]; then
++                DIR="aarch64"
++            else
++                DIR="aarch64v80compat"
++            fi
++        elif [ "${ARCH}" = "powerpc64le" ] || [ "${ARCH}" = "ppc64le" ]; then
++            DIR="powerpc64le"
++        elif [ "${ARCH}" = "riscv64" ]; then
++            DIR="riscv64"
++        elif [ "${ARCH}" = "s390x" ]; then
++            DIR="s390x"
++        fi
++    elif [ "${OS}" = "FreeBSD" ]; then
++        if [ "${ARCH}" = "x86_64" ] || [ "${ARCH}" = "amd64" ]; then
++            DIR="freebsd"
++        fi
++    elif [ "${OS}" = "Darwin" ]; then
++        if [ "${ARCH}" = "x86_64" ] || [ "${ARCH}" = "amd64" ]; then
++            DIR="macos"
++        elif [ "${ARCH}" = "aarch64" ] || [ "${ARCH}" = "arm64" ]; then
++            DIR="macos-aarch64"
++        fi
++    fi
++
++    if [ -z "${DIR}" ]; then
++        echo "Error: Operating system '${OS}' / architecture '${ARCH}' is unsupported." >&2
++        exit 1
++    fi
++}
++
++resolve_channel_path()
++{
++    case "${CHANNEL}" in
++        stable)
++            CHANNEL_PATH="stable"
++            ;;
++        lts)
++            CHANNEL_PATH="lts"
++            ;;
++        testing)
++            CHANNEL_PATH="master"
++            ;;
++        *)
++            echo "Error: Unknown channel '${CHANNEL}'" >&2
++            exit 1
++            ;;
++    esac
++}
++
++build_download_url()
++{
++    if [ -n "${VERSION}" ]; then
++        URL="https://builds.clickhouse.com/${CHANNEL_PATH}/${VERSION}/${DIR}/clickhouse"
++    else
++        URL="https://builds.clickhouse.com/${CHANNEL_PATH}/${DIR}/clickhouse"
++    fi
++}
++
++resolve_output_path()
++{
++    clickhouse_download_filename_prefix="clickhouse"
++    clickhouse="${clickhouse_download_filename_prefix}"
++
++    if [ -n "${INSTALL_DIR}" ]; then
++        clickhouse="${INSTALL_DIR}/${clickhouse}"
++        mkdir -p "${INSTALL_DIR}"
++    fi
++
++    if [ -f "${clickhouse}" ]; then
++        if [ -n "${YES}" ]; then
++            rm -f "${clickhouse}"
++        else
++            read -p "ClickHouse binary ${clickhouse} already exists. Overwrite? [y/N] " answer
++            if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
++                rm -f "${clickhouse}"
++            else
++                i=0
++                while [ -f "${clickhouse}" ]; do
++                    clickhouse="${INSTALL_DIR:-.}/${clickhouse_download_filename_prefix}.${i}"
++                    i=$((i + 1))
++                done
++            fi
++        fi
++    fi
++}
++
++download_clickhouse()
++{
++    echo ""
++    echo "Channel : ${CHANNEL}"
++    if [ -n "${VERSION}" ]; then
++        echo "Version : ${VERSION}"
++    else
++        echo "Version : latest"
++    fi
++    echo "Platform: ${OS} / ${ARCH} (${DIR})"
++    echo ""
++    echo "Will download ${URL} into ${clickhouse}"
++    echo ""
++    curl -fSL "${URL}" -o "${clickhouse}" && chmod a+x "${clickhouse}" || {
++        echo "Error: Failed to download ClickHouse from ${URL}" >&2
++        exit 1
++    }
++    echo ""
++    echo "Successfully downloaded the ClickHouse binary, you can run it as:"
++    echo "    ${clickhouse}"
++    echo ""
++    echo "You can also install it:"
++    echo "    sudo ${clickhouse} install"
++}
++
++install_clickhousectl()
++{
++    if [ -n "${SKIP_CHCTL}" ] || [ -n "${ONLY_BINARY}" ]; then
++        return 0
++    fi
++
++    chctl_target=
++    if [ "${OS}" = "Linux" ]; then
++        if [ "${ARCH}" = "x86_64" ] || [ "${ARCH}" = "amd64" ]; then
++            chctl_target="x86_64-unknown-linux-musl"
++        elif [ "${ARCH}" = "aarch64" ] || [ "${ARCH}" = "arm64" ]; then
++            chctl_target="aarch64-unknown-linux-musl"
++        fi
++    elif [ "${OS}" = "Darwin" ]; then
++        if [ "${ARCH}" = "x86_64" ] || [ "${ARCH}" = "amd64" ]; then
++            chctl_target="x86_64-apple-darwin"
++        elif [ "${ARCH}" = "aarch64" ] || [ "${ARCH}" = "arm64" ]; then
++            chctl_target="aarch64-apple-darwin"
++        fi
++    fi
++
++    if [ -z "${chctl_target}" ]; then
++        return 0
++    fi
++
++    echo ""
++    echo "Fetching the latest clickhousectl release..."
++    chctl_tag=$(curl -fsSL "https://api.github.com/repos/ClickHouse/clickhousectl/releases/latest" \
++        2>/dev/null | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' || true)
++
++    if [ -z "${chctl_tag}" ]; then
++        echo "Warning: could not determine the latest clickhousectl release. Continuing."
++        return 0
++    fi
++
++    chctl_install_dir="${HOME}/.local/bin"
++    chctl_archive="clickhousectl-${chctl_target}-${chctl_tag}.tar.gz"
++    chctl_url="https://builds.clickhouse.com/clickhousectl/${chctl_archive}"
++    echo "Will download ${chctl_url} into ${chctl_install_dir}/clickhousectl"
++    chctl_tmp=$(mktemp -d)
++    if mkdir -p "${chctl_install_dir}" \
++        && curl -fsSL "${chctl_url}" -o "${chctl_tmp}/${chctl_archive}" \
++        && tar -xzf "${chctl_tmp}/${chctl_archive}" -C "${chctl_tmp}" \
++        && mv -f "${chctl_tmp}/clickhousectl-${chctl_target}-${chctl_tag}/clickhousectl" "${chctl_install_dir}/clickhousectl"; then
++        chmod a+x "${chctl_install_dir}/clickhousectl"
++        ln -sf "${chctl_install_dir}/clickhousectl" "${chctl_install_dir}/chctl"
++        echo ""
++        echo "Successfully installed clickhousectl to ${chctl_install_dir}/clickhousectl"
++        echo "Created alias: chctl -> clickhousectl"
++        case ":$PATH:" in
++            *":${chctl_install_dir}:"*) ;;
++            *)
++                echo ""
++                echo "NOTE: ${chctl_install_dir} is not in your PATH."
++                echo "Add it by running:"
++                echo ""
++                echo "  export PATH=\"${chctl_install_dir}:\$PATH\""
++                echo ""
++                echo "You may want to add that line to your shell profile (~/.bashrc, ~/.zshrc, etc.)"
++                ;;
++        esac
++    else
++        echo "Warning: failed to download clickhousectl. Continuing."
++    fi
++    rm -rf "${chctl_tmp}"
++}
++
++main()
++{
++    parse_args "$@"
++    validate_channel
++    detect_platform
++    resolve_channel_path
++    build_download_url
++    resolve_output_path
++    download_clickhouse
++    install_clickhousectl
++}
++
++main "$@"
+diff --git a/tools/release_countdown.py b/tools/release_countdown.py
+new file mode 100644
+index 00000000000..dfb397c0e0c
+--- /dev/null
++++ b/tools/release_countdown.py
+@@ -0,0 +1,176 @@
++#!/usr/bin/env python3
++
++import argparse
++import sys
++from datetime import datetime, timezone
++from pathlib import Path
++
++try:
++    import yaml
++except ImportError:
++    print("Error: PyYAML is required. Install it with: pip install pyyaml", file=sys.stderr)
++    sys.exit(1)
++
++REPO_ROOT = Path(__file__).resolve().parent.parent
++CONFIG_PATH = REPO_ROOT / "community" / "config.yaml"
++
++SHIELDS_IO_BASE = "https://img.shields.io/badge"
++
++
++def load_config(config_path=None):
++    path = Path(config_path) if config_path else CONFIG_PATH
++    with open(path, "r", encoding="utf-8") as f:
++        return yaml.safe_load(f)
++
++
++def get_next_release(config):
++    release = config.get("release", {}).get("next", {})
++    if not release:
++        return None
++    return release
++
++
++def get_scheduled_releases(config):
++    return config.get("release", {}).get("schedule", [])
++
++
++def parse_release_date(date_str):
++    return datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
++
++
++def compute_countdown(target_date):
++    now = datetime.now(timezone.utc)
++    delta = target_date - now
++    return delta
++
++
++def format_countdown_badge(version, target_date):
++    delta = compute_countdown(target_date)
++
++    if delta.total_seconds() <= 0:
++        label = f"ClickHouse%20{version}%20Released"
++        message = "OUT%20NOW"
++        color = "brightgreen"
++    else:
++        days = delta.days
++        hours = delta.seconds // 3600
++
++        if days > 0:
++            time_str = f"{days}%20day{'s' if days != 1 else ''}"
++        else:
++            time_str = f"{hours}%20hour{'s' if hours != 1 else ''}"
++
++        label = f"Next%20Release%20{version}"
++        message = f"in%20{time_str}"
++        color = "blue" if days > 7 else "yellow" if days > 1 else "orange"
++
++    badge_url = f"{SHIELDS_IO_BASE}/{label}-{message}-{color}?style=for-the-badge"
++    return badge_url
++
++
++def format_countdown_markdown(version, target_date, event_url=None):
++    delta = compute_countdown(target_date)
++    badge_url = format_countdown_badge(version, target_date)
++
++    if event_url:
++        markdown = f"[![Release Countdown]({badge_url})]({event_url})"
++    else:
++        markdown = f"![Release Countdown]({badge_url})"
++
++    return markdown
++
++
++def format_countdown_text(version, target_date):
++    delta = compute_countdown(target_date)
++
++    if delta.total_seconds() <= 0:
++        return f"ClickHouse {version} has been released!"
++
++    days = delta.days
++    hours = delta.seconds // 3600
++    minutes = (delta.seconds % 3600) // 60
++
++    if days > 0:
++        return f"ClickHouse {version} releases in {days} day{'s' if days != 1 else ''}, {hours} hour{'s' if hours != 1 else ''}"
++    elif hours > 0:
++        return f"ClickHouse {version} releases in {hours} hour{'s' if hours != 1 else ''}, {minutes} minute{'s' if minutes != 1 else ''}"
++    else:
++        return f"ClickHouse {version} releases in {minutes} minute{'s' if minutes != 1 else ''}"
++
++
++def format_schedule_table(schedule):
++    if not schedule:
++        return ""
++
++    lines = ["| Version | Planned Date |", "|---------|-------------|"]
++    now = datetime.now(timezone.utc)
++
++    for entry in schedule:
++        version = entry.get("version", "")
++        date_str = entry.get("date", "")
++        try:
++            date = parse_release_date(date_str)
++            delta = compute_countdown(date)
++            if delta.total_seconds() <= 0:
++                status = "✅ Released"
++            else:
++                status = f"{delta.days} days away"
++        except ValueError:
++            status = "TBD"
++        lines.append(f"| {version} | {date_str} | {status} |")
++
++    return "\n".join(lines)
++
++
++def main():
++    parser = argparse.ArgumentParser(description="Generate release countdown badge from community/config.yaml")
++    parser.add_argument("--config", default=None, help="Path to config.yaml (default: community/config.yaml)")
++    parser.add_argument(
++        "--format",
++        choices=["markdown", "badge-url", "text", "schedule"],
++        default="markdown",
++        help="Output format (default: markdown)",
++    )
++    parser.add_argument("--date", default=None, help="Override release date (YYYY-MM-DD)")
++    parser.add_argument("--version", default=None, help="Override release version")
++    parser.add_argument("--url", default=None, help="Override event URL")
++    args = parser.parse_args()
++
++    config = load_config(args.config)
++    release = get_next_release(config)
++
++    if not release and not args.date:
++        print("Error: No next release found in config.yaml and no --date override provided.", file=sys.stderr)
++        sys.exit(1)
++
++    version = args.version or (release.get("version", "") if release else "")
++    date_str = args.date or (release.get("date", "") if release else "")
++    event_url = args.url or (release.get("event_url", "") if release else "")
++
++    if not date_str:
++        print("Error: No release date available.", file=sys.stderr)
++        sys.exit(1)
++
++    try:
++        target_date = parse_release_date(date_str)
++    except ValueError:
++        print(f"Error: Invalid date format '{date_str}'. Expected YYYY-MM-DD.", file=sys.stderr)
++        sys.exit(1)
++
++    if args.format == "markdown":
++        print(format_countdown_markdown(version, target_date, event_url or None))
++    elif args.format == "badge-url":
++        print(format_countdown_badge(version, target_date))
++    elif args.format == "text":
++        print(format_countdown_text(version, target_date))
++    elif args.format == "schedule":
++        schedule = get_scheduled_releases(config)
++        output = format_schedule_table(schedule)
++        if output:
++            print(output)
++        else:
++            print("No scheduled releases found in config.yaml.")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tools/render_community_links.py b/tools/render_community_links.py
+new file mode 100644
+index 00000000000..ff54cc0789a
+--- /dev/null
++++ b/tools/render_community_links.py
+@@ -0,0 +1,183 @@
++#!/usr/bin/env python3
++
++import argparse
++import re
++import sys
++from pathlib import Path
++
++try:
++    import yaml
++except ImportError:
++    print("Error: PyYAML is required. Install it with: pip install pyyaml", file=sys.stderr)
++    sys.exit(1)
++
++REPO_ROOT = Path(__file__).resolve().parent.parent
++CONFIG_PATH = REPO_ROOT / "community" / "config.yaml"
++README_PATH = REPO_ROOT / "README.md"
++
++SECTION_BEGIN = "<!-- COMMUNITY_LINKS_BEGIN -->"
++SECTION_END = "<!-- COMMUNITY_LINKS_END -->"
++
++
++def load_config(config_path=None):
++    path = Path(config_path) if config_path else CONFIG_PATH
++    with open(path, "r", encoding="utf-8") as f:
++        return yaml.safe_load(f)
++
++
++def render_useful_links(links):
++    primary = []
++    docs = []
++    chat = []
++    social = []
++    media = []
++    development = []
++    events = []
++
++    for link in links:
++        cat = link.get("category", "primary")
++        if cat == "primary":
++            primary.append(link)
++        elif cat == "docs":
++            docs.append(link)
++        elif cat == "chat":
++            chat.append(link)
++        elif cat == "social":
++            social.append(link)
++        elif cat == "media":
++            media.append(link)
++        elif cat == "development":
++            development.append(link)
++        elif cat == "events":
++            events.append(link)
++
++    lines = []
++
++    for link in primary + docs + development + chat + social + media + events:
++        name = link["name"]
++        url = link["url"]
++        desc = link.get("description", "")
++        if desc:
++            lines.append(f"* [{name}]({url}) {desc}")
++        else:
++            lines.append(f"* [{name}]({url})")
++
++    return "\n".join(lines)
++
++
++def render_release_section(config):
++    release = config.get("release", {}).get("next", {})
++    if not release:
++        return ""
++
++    version = release.get("version", "")
++    date = release.get("date", "")
++    event_url = release.get("event_url", "")
++
++    if event_url:
++        line = f'Join us for the [ClickHouse **{version}** Release Call]({event_url}) on {date}.'
++    else:
++        line = f"Join us for the ClickHouse **{version}** Release Call on {date}."
++
++    return line
++
++
++def update_readme(config, readme_path=None, dry_run=False):
++    path = Path(readme_path) if readme_path else README_PATH
++    content = path.read_text(encoding="utf-8")
++
++    links_section = render_useful_links(config.get("community", {}).get("links", []))
++    release_line = render_release_section(config)
++
++    new_content = content
++
++    if SECTION_BEGIN in content and SECTION_END in content:
++        pattern = re.compile(
++            re.escape(SECTION_BEGIN) + r".*?" + re.escape(SECTION_END),
++            re.DOTALL,
++        )
++        replacement = SECTION_BEGIN + "\n" + links_section + "\n" + SECTION_END
++        new_content = pattern.sub(replacement, content)
++    else:
++        useful_links_header = "## Useful Links"
++        if useful_links_header in new_content:
++            next_header_match = re.search(
++                r"\n##\s", new_content[new_content.index(useful_links_header) + len(useful_links_header) :]
++            )
++            if next_header_match:
++                end_pos = new_content.index(useful_links_header) + len(useful_links_header) + next_header_match.start()
++                new_content = (
++                    new_content[: new_content.index(useful_links_header)]
++                    + useful_links_header
++                    + "\n\n"
++                    + SECTION_BEGIN
++                    + "\n"
++                    + links_section
++                    + "\n"
++                    + SECTION_END
++                    + "\n\n"
++                    + new_content[end_pos:]
++                )
++            else:
++                new_content = (
++                    new_content[: new_content.index(useful_links_header)]
++                    + useful_links_header
++                    + "\n\n"
++                    + SECTION_BEGIN
++                    + "\n"
++                    + links_section
++                    + "\n"
++                    + SECTION_END
++                    + "\n"
++                )
++
++    release_header = "## Monthly Release & Community Call"
++    if release_header in new_content and release_line:
++        release_section_start = new_content.index(release_header) + len(release_header)
++        next_release_header = re.search(r"\n##\s", new_content[release_section_start:])
++        if next_release_header:
++            release_section_end = release_section_start + next_release_header.start()
++            new_content = (
++                new_content[:release_section_start]
++                + "\n\n"
++                + release_line
++                + "\n\n"
++                + new_content[release_section_end:]
++            )
++
++    if dry_run:
++        print(new_content)
++        return False
++
++    if new_content != content:
++        path.write_text(new_content, encoding="utf-8")
++        print(f"Updated {path}")
++        return True
++    else:
++        print("No changes needed.")
++        return False
++
++
++def main():
++    parser = argparse.ArgumentParser(description="Render community links from config.yaml into README.md")
++    parser.add_argument("--config", default=None, help="Path to config.yaml (default: community/config.yaml)")
++    parser.add_argument("--readme", default=None, help="Path to README.md (default: README.md)")
++    parser.add_argument("--dry-run", action="store_true", help="Print result without writing to file")
++    parser.add_argument(
++        "--section-only",
++        action="store_true",
++        help="Only output the Useful Links section content (for embedding)",
++    )
++    args = parser.parse_args()
++
++    config = load_config(args.config)
++
++    if args.section_only:
++        print(render_useful_links(config.get("community", {}).get("links", [])))
++        return
++
++    update_readme(config, args.readme, args.dry_run)
++
++
++if __name__ == "__main__":
++    main()
