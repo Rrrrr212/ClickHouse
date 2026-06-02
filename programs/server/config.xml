@@ -1214,28 +1214,6 @@
         <!-- storage_policy>local_ssd</storage_policy -->
     </query_log>
 
-    <slow_log>
-        <database>system</database>
-        <table>slow_log</table>
-        <partition_by>toYYYYMM(event_date)</partition_by>
-        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
-        <max_size_rows>1048576</max_size_rows>
-        <reserved_size_rows>8192</reserved_size_rows>
-        <buffer_size_rows_flush_threshold>524288</buffer_size_rows_flush_threshold>
-        <flush_on_crash>false</flush_on_crash>
-    </query_log>
-
-    <slow_log>
-        <database>system</database>
-        <table>slow_log</table>
-        <partition_by>toYYYYMM(event_date)</partition_by>
-        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
-        <max_size_rows>1048576</max_size_rows>
-        <reserved_size_rows>8192</reserved_size_rows>
-        <buffer_size_rows_flush_threshold>524288</buffer_size_rows_flush_threshold>
-        <flush_on_crash>false</flush_on_crash>
-    </slow_log>
-
     <!-- Trace log. Stores stack traces collected by query profilers.
          See query_profiler_real_time_period_ns and query_profiler_cpu_time_period_ns settings. -->
     <trace_log>

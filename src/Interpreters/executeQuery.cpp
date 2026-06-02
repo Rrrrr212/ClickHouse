@@ -58,7 +58,6 @@
 #include <Interpreters/ProcessList.h>
 #include <Interpreters/ProcessorsProfileLog.h>
 #include <Interpreters/QueryLog.h>
-#include <Interpreters/SlowQueryMonitor.h>
 #include <Interpreters/QueryMetricLog.h>
 #include <Interpreters/ReplaceQueryParameterVisitor.h>
 #include <Interpreters/SelectIntersectExceptQueryVisitor.h>
@@ -710,10 +709,6 @@ static void logQueryFinishImpl(
                 query_log->add(elem);
         }
 
-        if (settings[Setting::slow_query_log_enable] && elem.query_duration_ms >= settings[Setting::slow_query_time_threshold_ms])
-        {
-            SlowQueryMonitor::checkAndRecord(elem.query, context, info, elem.query_duration_ms, elem);
-        }
     }
 
     if (query_span && query_span->isTraceEnabled())
