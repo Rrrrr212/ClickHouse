@@ -58,7 +58,6 @@
 #include <Interpreters/ProcessList.h>
 #include <Interpreters/ProcessorsProfileLog.h>
 #include <Interpreters/QueryLog.h>
-#include <Interpreters/SlowQueryLog.h>
 #include <Interpreters/QueryMetricLog.h>
 #include <Interpreters/ReplaceQueryParameterVisitor.h>
 #include <Interpreters/SelectIntersectExceptQueryVisitor.h>
@@ -152,8 +151,6 @@ namespace Setting
     extern const SettingsLogQueriesType log_queries_min_type;
     extern const SettingsFloat log_queries_probability;
     extern const SettingsBool log_query_settings;
-    extern const SettingsBool slow_query_log_enable;
-    extern const SettingsMilliseconds slow_query_time_threshold_ms;
     extern const SettingsUInt64 max_ast_depth;
     extern const SettingsUInt64 max_ast_elements;
     extern const SettingsNonZeroUInt64 max_block_size;
@@ -634,43 +631,6 @@ static QueryPipelineFinalizedInfo finalizeQueryPipelineBeforeLogging(QueryPipeli
         .pipeline_dump = std::move(pipeline_dump)};
 }
 
-static void logSlowQueryIfNeeded(const QueryLogElement & elem, const ContextPtr & context)
-{
-    const Settings & settings = context->getSettingsRef();
-
-    if (!settings[Setting::slow_query_log_enable])
-        return;
-
-    UInt64 threshold_ms = settings[Setting::slow_query_time_threshold_ms].totalMilliseconds();
-    if (elem.query_duration_ms < threshold_ms)
-        return;
-
-    if (auto slow_query_log = context->getSlowQueryLog())
-    {
-        SlowQueryLogElement slow_elem;
-        slow_elem.type = elem.type;
-        slow_elem.event_time = elem.event_time;
-        slow_elem.event_time_microseconds = elem.event_time_microseconds;
-        slow_elem.query_start_time = elem.query_start_time;
-        slow_elem.query_start_time_microseconds = elem.query_start_time_microseconds;
-        slow_elem.query_duration_ms = elem.query_duration_ms;
-        slow_elem.read_rows = elem.read_rows;
-        slow_elem.read_bytes = elem.read_bytes;
-        slow_elem.result_rows = elem.result_rows;
-        slow_elem.result_bytes = elem.result_bytes;
-        slow_elem.memory_usage = elem.memory_usage;
-        slow_elem.current_database = elem.current_database;
-        slow_elem.query = elem.query;
-        slow_elem.normalized_query_hash = elem.normalized_query_hash;
-        slow_elem.exception_code = elem.exception_code;
-        slow_elem.exception = elem.exception;
-        slow_elem.stack_trace = elem.stack_trace;
-        slow_elem.client_info = elem.client_info;
-        slow_elem.log_comment = elem.log_comment;
-        slow_query_log->add(slow_elem);
-    }
-}
-
 static void logQueryFinishImpl(
     QueryLogElement & elem,
     const ContextMutablePtr & context,
@@ -748,8 +708,6 @@ static void logQueryFinishImpl(
             if (auto query_log = context->getQueryLog())
                 query_log->add(elem);
         }
-
-        logSlowQueryIfNeeded(elem, context);
 
     }
 
@@ -885,8 +843,6 @@ void logQueryException(
         if (auto query_log = context->getQueryLog())
             query_log->add(elem);
     }
-
-    logSlowQueryIfNeeded(elem, context);
 
     if (query_span)
     {

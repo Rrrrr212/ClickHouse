@@ -2035,24 +2035,6 @@ Possible values:
 - Positive floating-point number in the range [0..1]. For example, if the setting value is `0.5`, about half of the queries are logged in the system tables.
 - 1 — All queries are logged in the system tables.
 )", 0) \
-    DECLARE(Bool, slow_query_log_enable, false, R"(
-Enable logging of slow queries to the [system.slow_log](../../operations/system-tables/slow_log.md) system table.
-
-When enabled, queries that exceed `slow_query_time_threshold_ms` will be recorded.
-
-Possible values:
-
-- 0 — Slow query logging is disabled.
-- 1 — Slow query logging is enabled.
-)", 0) \
-    DECLARE(Milliseconds, slow_query_time_threshold_ms, 10000, R"(
-The minimum query duration in milliseconds for a query to be considered slow and logged to [system.slow_log](../../operations/system-tables/slow_log.md).
-
-Only takes effect when `slow_query_log_enable` is set to true.
-
-- Type: milliseconds
-- Default value: 10000 (10 seconds)
-)", 0) \
     \
     DECLARE(Bool, log_processors_profiles, true, R"(
 Write time that processor spent during execution/waiting for data to `system.processors_profile_log` table.

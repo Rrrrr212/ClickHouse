@@ -139,7 +139,6 @@ class AggregatedZooKeeperLog;
 class IcebergMetadataLog;
 class DeltaMetadataLog;
 class PredicateStatisticsLog;
-class SlowQueryLog;
 class SessionLog;
 class BackupsWorker;
 class TransactionsInfoLog;
@@ -1578,7 +1577,6 @@ public:
     std::shared_ptr<IcebergMetadataLog> getIcebergMetadataLog() const;
     std::shared_ptr<DeltaMetadataLog> getDeltaMetadataLog() const;
     std::shared_ptr<PredicateStatisticsLog> getPredicateStatisticsLog() const;
-    std::shared_ptr<SlowQueryLog> getSlowQueryLog() const;
 
     SystemLogs getSystemLogs() const;
 

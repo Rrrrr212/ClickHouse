@@ -145,7 +145,6 @@
 #include <Interpreters/TransactionLog.h>
 #include <Interpreters/ZooKeeperConnectionLog.h>
 #include <Interpreters/AggregatedZooKeeperLog.h>
-#include <Interpreters/SlowQueryLog.h>
 #include <filesystem>
 #include <Storages/StorageView.h>
 #include <Parsers/ASTFunction.h>
@@ -6242,16 +6241,6 @@ std::shared_ptr<PredicateStatisticsLog> Context::getPredicateStatisticsLog() con
         return {};
 
     return shared->system_logs->predicate_statistics_log;
-}
-
-std::shared_ptr<SlowQueryLog> Context::getSlowQueryLog() const
-{
-    SharedLockGuard lock(shared->mutex);
-
-    if (!shared->system_logs)
-        return {};
-
-    return shared->system_logs->slow_log;
 }
 
 SystemLogs Context::getSystemLogs() const
