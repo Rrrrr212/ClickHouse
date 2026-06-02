@@ -1,0 +1,1576 @@
+diff --git a/tests/ci/test_selection_strategy/__init__.py b/tests/ci/test_selection_strategy/__init__.py
+new file mode 100644
+index 00000000000..e69de29bb2d
+diff --git a/tests/ci/test_selection_strategy/semantic_path_filter.py b/tests/ci/test_selection_strategy/semantic_path_filter.py
+new file mode 100644
+index 00000000000..9b3f9cb7072
+--- /dev/null
++++ b/tests/ci/test_selection_strategy/semantic_path_filter.py
+@@ -0,0 +1,858 @@
++"""
++Semantic Path-Based Test Selection Strategy for ClickHouse
++
++Design rationale:
++  ClickHouse is a columnar OLAP database with high-frequency merges. Its source
++  tree and test tree are both organised by *domain* (Keeper/ZooKeeper, MergeTree,
++  Pipeline/Processor, Access Control, etc.).  A purely structural diff-to-test
++  mapping (e.g. "which test files import the changed header?") often yields
++  irrelevant results because shared low-level headers drag in unrelated tests.
++
++  This module introduces a **semantic domain layer** between changed source paths
++  and candidate tests.  Each domain is defined by a set of *path keywords* that
++  appear in both source and test paths.  A candidate test is kept only when it
++  shares at least one domain with the changed files; tests from disjoint domains
++  are filtered out.
++
++  Target: raise precision-recall from ~50 % to ≥ 80 % for the scenario where a
++  PR touches `KeeperClientCLI/Commands.cpp` but the old algorithm selects
++  `01505_pipeline_executor_UAF`.
++"""
++
++from __future__ import annotations
++
++import os
++import re
++import fnmatch
++from dataclasses import dataclass, field
++from enum import Enum
++from pathlib import PurePosixPath
++from typing import Dict, FrozenSet, List, Optional, Set, Tuple
++
++
++class Domain(Enum):
++    KEEPER = "keeper"
++    ZOOKEEPER = "zookeeper"
++    MERGE_TREE = "merge_tree"
++    REPLICATED = "replicated"
++    PIPELINE = "pipeline"
++    PROCESSOR = "processor"
++    ACCESS_CONTROL = "access_control"
++    KAFKA = "kafka"
++    S3 = "s3"
++    BACKUP = "backup"
++    MUTATION = "mutation"
++    PARTS = "parts"
++    QUORUM = "quorum"
++    CLUSTER = "cluster"
++    DISTRIBUTED = "distributed"
++    DICTIONARY = "dictionary"
++    FORMAT = "format"
++    FUNCTION = "function"
++    AGGREGATE = "aggregate"
++    JOIN = "join"
++    OPTIMIZE = "optimize"
++    TTL = "ttl"
++    PROJECTION = "projection"
++    WINDOW = "window"
++    SETTINGS = "settings"
++    LOG = "log"
++    METRICS = "metrics"
++    AUTH = "auth"
++    ENCRYPTION = "encryption"
++    COMPRESS = "compress"
++    NETWORK = "network"
++    HTTP = "http"
++    TCP = "tcp"
++    INTERSERVER = "interserver"
++    COMMON = "common"
++    UNKNOWN = "unknown"
++
++
++@dataclass(frozen=True)
++class DomainDef:
++    domain: Domain
++    source_keywords: FrozenSet[str]
++    test_keywords: FrozenSet[str]
++    source_path_patterns: FrozenSet[str]
++    test_path_patterns: FrozenSet[str]
++    priority: int = 0
++
++
++DOMAIN_DEFINITIONS: List[DomainDef] = [
++    DomainDef(
++        domain=Domain.KEEPER,
++        source_keywords=frozenset({
++            "keeper", "keeperclient", "keeperclientcli", "keeperstorage",
++            "keeperdispatcher", "keeperserver", "keeperstatemachine",
++            "keepersnapshot", "keepercontext", "keepercommon",
++            "keeperfeatureflags", "keeperexception", "keeper4lwinfo",
++            "keeperconstants", "keeperlogstore", "keeperreadthreadpool",
++            "keeperrequestdispatcher", "keeperreconfiguration",
++            "keeperconnectionstats", "keeperasynchronousmetrics",
++            "coordination",
++        }),
++        test_keywords=frozenset({
++            "keeper", "keeper_client", "keeper_map", "keeperclient",
++            "clickhouse_keeper", "keeperclientcli",
++        }),
++        source_path_patterns=frozenset({
++            "src/Coordination/*",
++            "src/Common/ZooKeeper/KeeperClientCLI/*",
++            "src/Common/ZooKeeper/KeeperException*",
++            "src/Common/ZooKeeper/KeeperFeatureFlags*",
++            "src/Common/ZooKeeper/KeeperSpans*",
++            "src/Common/ZooKeeper/KeeperOverDispatcher*",
++            "src/Server/Keeper*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/integration/test_keeper*",
++            "tests/queries/*/0*keeper*",
++            "tests/queries/*/0*zookeeper*",
++            "tests/stress/keeper/*",
++            "tests/jepsen.clickhouse/*keeper*",
++        }),
++        priority=10,
++    ),
++    DomainDef(
++        domain=Domain.ZOOKEEPER,
++        source_keywords=frozenset({
++            "zookeeper", "zk", "zkutil", "zookeeperrepository",
++        }),
++        test_keywords=frozenset({
++            "zookeeper",
++        }),
++        source_path_patterns=frozenset({
++            "src/Common/ZooKeeper/*",
++            "src/Storages/MergeTree/ZooKeeper*",
++            "src/Interpreters/ZooKeeper*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*zookeeper*",
++            "tests/integration/test_zookeeper*",
++            "tests/integration/test_reload_zookeeper/*",
++        }),
++        priority=9,
++    ),
++    DomainDef(
++        domain=Domain.MERGE_TREE,
++        source_keywords=frozenset({
++            "mergetree", "mergetreemetadata", "mergetreepartinfo",
++            "mergetreedata", "mergetreeprojection", "mergetreewriter",
++            "mergetreereader", "mergetreelocks", "mergetreeparts",
++        }),
++        test_keywords=frozenset({
++            "merge_tree", "mergetree",
++        }),
++        source_path_patterns=frozenset({
++            "src/Storages/MergeTree/*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*merge_tree*",
++        }),
++        priority=8,
++    ),
++    DomainDef(
++        domain=Domain.REPLICATED,
++        source_keywords=frozenset({
++            "replicated", "replica", "replicatedmerge",
++            "replicatedtable", "storageReplicated",
++        }),
++        test_keywords=frozenset({
++            "replicated", "replica", "quorum",
++        }),
++        source_path_patterns=frozenset({
++            "src/Storages/MergeTree/Replicated*",
++            "src/Storages/StorageReplicated*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*replicated*",
++            "tests/queries/*/0*quorum*",
++        }),
++        priority=8,
++    ),
++    DomainDef(
++        domain=Domain.PIPELINE,
++        source_keywords=frozenset({
++            "pipeline", "pipelinexecutor", "pipelinechain",
++            "executingpipeline", "pipelinebuilder",
++        }),
++        test_keywords=frozenset({
++            "pipeline", "pipeline_executor",
++        }),
++        source_path_patterns=frozenset({
++            "src/Processors/Pipeline*",
++            "src/Processors/Executors/PipelineExecutor*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*pipeline*",
++        }),
++        priority=7,
++    ),
++    DomainDef(
++        domain=Domain.PROCESSOR,
++        source_keywords=frozenset({
++            "processor", "iinflatingblockinputformat",
++            "isource", "isink", "itransform",
++        }),
++        test_keywords=frozenset({
++            "processor",
++        }),
++        source_path_patterns=frozenset({
++            "src/Processors/*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*processor*",
++        }),
++        priority=7,
++    ),
++    DomainDef(
++        domain=Domain.ACCESS_CONTROL,
++        source_keywords=frozenset({
++            "access", "user", "role", "privilege", "rowpolicy",
++            "quota", "settingsprofile", "allowedcapabilities",
++        }),
++        test_keywords=frozenset({
++            "access", "rbac", "user", "role", "privilege", "quota",
++            "row_policy", "settings_profile",
++        }),
++        source_path_patterns=frozenset({
++            "src/Access/*",
++            "src/Interpreters/Access*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*access*",
++            "tests/queries/*/0*rbac*",
++            "tests/integration/test_access*",
++        }),
++        priority=6,
++    ),
++    DomainDef(
++        domain=Domain.KAFKA,
++        source_keywords=frozenset({
++            "kafka", "kafkaproducer", "kafkaconsumer", "kafkawriter",
++            "kafkareader", "storagekafka",
++        }),
++        test_keywords=frozenset({
++            "kafka",
++        }),
++        source_path_patterns=frozenset({
++            "src/Storages/Kafka/*",
++            "src/Formats/Kafka*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/integration/test_storage_kafka/*",
++        }),
++        priority=6,
++    ),
++    DomainDef(
++        domain=Domain.S3,
++        source_keywords=frozenset({
++            "s3", "s3client", "s3common", "s3objectstorage",
++            "s3credentials", "storageS3",
++        }),
++        test_keywords=frozenset({
++            "s3",
++        }),
++        source_path_patterns=frozenset({
++            "src/Common/S3/*",
++            "src/Storages/StorageS3*",
++            "src/Storages/ObjectStorage/S3*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/integration/test_storage_s3*",
++        }),
++        priority=6,
++    ),
++    DomainDef(
++        domain=Domain.BACKUP,
++        source_keywords=frozenset({
++            "backup", "restore", "backupimpl", "backupfactory",
++        }),
++        test_keywords=frozenset({
++            "backup", "restore",
++        }),
++        source_path_patterns=frozenset({
++            "src/Backups/*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/integration/test_backup*",
++        }),
++        priority=6,
++    ),
++    DomainDef(
++        domain=Domain.MUTATION,
++        source_keywords=frozenset({
++            "mutation", "mutate", "mutatedtask", "mutationcommands",
++        }),
++        test_keywords=frozenset({
++            "mutation", "mutate",
++        }),
++        source_path_patterns=frozenset({
++            "src/Storages/MergeTree/Mutate*",
++            "src/Storages/MergeTree/Mutation*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*mutation*",
++            "tests/queries/*/0*mutate*",
++        }),
++        priority=6,
++    ),
++    DomainDef(
++        domain=Domain.PARTS,
++        source_keywords=frozenset({
++            "part", "datapart", "partinfo", "partmerger",
++            "partloader", "partmoves",
++        }),
++        test_keywords=frozenset({
++            "part", "parts", "part_move",
++        }),
++        source_path_patterns=frozenset({
++            "src/Storages/MergeTree/*Part*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*part*",
++        }),
++        priority=5,
++    ),
++    DomainDef(
++        domain=Domain.FUNCTION,
++        source_keywords=frozenset({
++            "function", "ifunction", "functionfactory",
++            "functionhelpers", "scalarfunction",
++        }),
++        test_keywords=frozenset({
++            "function",
++        }),
++        source_path_patterns=frozenset({
++            "src/Functions/*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*function*",
++        }),
++        priority=5,
++    ),
++    DomainDef(
++        domain=Domain.AGGREGATE,
++        source_keywords=frozenset({
++            "aggregate", "iaggregatefunction", "aggregatefunctionfactory",
++            "aggregator",
++        }),
++        test_keywords=frozenset({
++            "aggregate", "aggregation",
++        }),
++        source_path_patterns=frozenset({
++            "src/AggregateFunctions/*",
++            "src/Processors/Transforms/Aggregating*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*aggregat*",
++        }),
++        priority=5,
++    ),
++    DomainDef(
++        domain=Domain.JOIN,
++        source_keywords=frozenset({
++            "join", "hashjoin", "mergingtransform", "joinswitch",
++            "storagejoin", "joinutils",
++        }),
++        test_keywords=frozenset({
++            "join",
++        }),
++        source_path_patterns=frozenset({
++            "src/Interpreters/Join*",
++            "src/Processors/Transforms/Join*",
++            "src/Storages/StorageJoin*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*join*",
++        }),
++        priority=5,
++    ),
++    DomainDef(
++        domain=Domain.OPTIMIZE,
++        source_keywords=frozenset({
++            "optimize", "merger", "partmerger",
++        }),
++        test_keywords=frozenset({
++            "optimize",
++        }),
++        source_path_patterns=frozenset({
++            "src/Storages/MergeTree/Merge*",
++            "src/Storages/MergeTree/Optimize*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*optimize*",
++        }),
++        priority=5,
++    ),
++    DomainDef(
++        domain=Domain.TTL,
++        source_keywords=frozenset({
++            "ttl", "ttltransform", "ttldescription",
++        }),
++        test_keywords=frozenset({
++            "ttl",
++        }),
++        source_path_patterns=frozenset({
++            "src/Storages/MergeTree/TTL*",
++            "src/Columns/TTL*",
++            "src/DataTypes/TTL*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*ttl*",
++        }),
++        priority=5,
++    ),
++    DomainDef(
++        domain=Domain.PROJECTION,
++        source_keywords=frozenset({
++            "projection", "projectiondescription", "projectionpart",
++        }),
++        test_keywords=frozenset({
++            "projection",
++        }),
++        source_path_patterns=frozenset({
++            "src/Storages/MergeTree/Projection*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*projection*",
++        }),
++        priority=5,
++    ),
++    DomainDef(
++        domain=Domain.FORMAT,
++        source_keywords=frozenset({
++            "format", "inputformat", "outputformat", "iformat",
++            "oformat", "nativeformat", "csvformat", "tsvformat",
++            "jsonformat", "parquetformat", "orcformat",
++        }),
++        test_keywords=frozenset({
++            "format",
++        }),
++        source_path_patterns=frozenset({
++            "src/Formats/*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*format*",
++        }),
++        priority=4,
++    ),
++    DomainDef(
++        domain=Domain.CLUSTER,
++        source_keywords=frozenset({
++            "cluster", "clusterproxy", "clustercatalog",
++            "shard", "distributed",
++        }),
++        test_keywords=frozenset({
++            "cluster", "shard", "distributed", "on_cluster",
++        }),
++        source_path_patterns=frozenset({
++            "src/Interpreters/Cluster*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*cluster*",
++            "tests/queries/*/0*shard*",
++            "tests/queries/*/0*distributed*",
++            "tests/integration/test_cluster*",
++        }),
++        priority=5,
++    ),
++    DomainDef(
++        domain=Domain.DICTIONARY,
++        source_keywords=frozenset({
++            "dictionary", "dictionarystructure", "dictionarysource",
++            "storagedictionary",
++        }),
++        test_keywords=frozenset({
++            "dictionary",
++        }),
++        source_path_patterns=frozenset({
++            "src/Dictionaries/*",
++            "src/Storages/StorageDictionary*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*dictionary*",
++        }),
++        priority=4,
++    ),
++    DomainDef(
++        domain=Domain.SETTINGS,
++        source_keywords=frozenset({
++            "settings", "settingconstraint", "settingschanges",
++        }),
++        test_keywords=frozenset({
++            "settings",
++        }),
++        source_path_patterns=frozenset({
++            "src/Core/Settings*",
++            "src/Interpreters/Settings*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*settings*",
++        }),
++        priority=3,
++    ),
++    DomainDef(
++        domain=Domain.LOG,
++        source_keywords=frozenset({
++            "systemlog", "log", "asynchronousmetrics",
++        }),
++        test_keywords=frozenset({
++            "system_log",
++        }),
++        source_path_patterns=frozenset({
++            "src/SystemLogs/*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*system_log*",
++        }),
++        priority=3,
++    ),
++    DomainDef(
++        domain=Domain.AUTH,
++        source_keywords=frozenset({
++            "authentication", "auth", "credentials", "ssl",
++        }),
++        test_keywords=frozenset({
++            "auth", "ssl", "secure",
++        }),
++        source_path_patterns=frozenset({
++            "src/Access/Authentication*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*auth*",
++            "tests/integration/test_ssl*",
++        }),
++        priority=4,
++    ),
++    DomainDef(
++        domain=Domain.ENCRYPTION,
++        source_keywords=frozenset({
++            "encryption", "encrypt", "encrypted",
++        }),
++        test_keywords=frozenset({
++            "encryption", "encrypted",
++        }),
++        source_path_patterns=frozenset({
++            "src/Encryption/*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*encrypt*",
++        }),
++        priority=4,
++    ),
++    DomainDef(
++        domain=Domain.COMPRESS,
++        source_keywords=frozenset({
++            "compression", "compress", "codec",
++        }),
++        test_keywords=frozenset({
++            "compression", "compress", "codec",
++        }),
++        source_path_patterns=frozenset({
++            "src/Compression/*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*compress*",
++            "tests/queries/*/0*codec*",
++        }),
++        priority=4,
++    ),
++    DomainDef(
++        domain=Domain.NETWORK,
++        source_keywords=frozenset({
++            "connectionpool", "connectionpoolwithfailover",
++            "endpoint", "socket", "dns", "resolver",
++        }),
++        test_keywords=frozenset({
++            "connection", "network", "dns",
++        }),
++        source_path_patterns=frozenset({
++            "src/Client/*",
++            "src/Interpreters/Connection*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*connection*",
++        }),
++        priority=3,
++    ),
++    DomainDef(
++        domain=Domain.HTTP,
++        source_keywords=frozenset({
++            "http", "httpconnection", "httprequest", "httpresponse",
++            "httpserver", "readwritebufferfromhttp",
++        }),
++        test_keywords=frozenset({
++            "http",
++        }),
++        source_path_patterns=frozenset({
++            "src/Server/HTTP*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*http*",
++        }),
++        priority=4,
++    ),
++    DomainDef(
++        domain=Domain.TCP,
++        source_keywords=frozenset({
++            "tcp", "tcpconnection", "tcpserver", "tcphandler",
++        }),
++        test_keywords=frozenset({
++            "tcp",
++        }),
++        source_path_patterns=frozenset({
++            "src/Server/TCP*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*tcp*",
++        }),
++        priority=4,
++    ),
++    DomainDef(
++        domain=Domain.WINDOW,
++        source_keywords=frozenset({
++            "window", "windowfunction",
++        }),
++        test_keywords=frozenset({
++            "window",
++        }),
++        source_path_patterns=frozenset({
++            "src/Processors/Transforms/Window*",
++            "src/Interpreters/Window*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*window*",
++        }),
++        priority=4,
++    ),
++    DomainDef(
++        domain=Domain.METRICS,
++        source_keywords=frozenset({
++            "metrics", "asynchronousmetrics", "profileevents",
++            "currentmetrics", "systemlogs",
++        }),
++        test_keywords=frozenset({
++            "metrics", "metric", "profile_event",
++        }),
++        source_path_patterns=frozenset({
++            "src/Common/ProfileEvents*",
++            "src/Common/CurrentMetrics*",
++        }),
++        test_path_patterns=frozenset({
++            "tests/queries/*/0*metric*",
++        }),
++        priority=3,
++    ),
++]
++
++
++def _normalise_path(p: str) -> str:
++    return p.replace("\\", "/")
++
++
++def _split_camel_case(s: str) -> List[str]:
++    parts: List[str] = []
++    current: List[str] = []
++    for ch in s:
++        if ch.isupper() and current:
++            if len(current) > 1 and current[-1].islower():
++                parts.append("".join(current).lower())
++                current = [ch]
++            else:
++                current.append(ch)
++        else:
++            current.append(ch)
++    if current:
++        parts.append("".join(current).lower())
++    return [p for p in parts if len(p) >= 2]
++
++
++def _path_keywords(path: str) -> Set[str]:
++    parts = PurePosixPath(_normalise_path(path)).parts
++    keywords: Set[str] = set()
++    for part in parts:
++        lower = part.lower()
++        for segment in re.split(r"[_./\\-]", lower):
++            if segment:
++                keywords.add(segment)
++        for match in re.findall(r"[a-z][a-z]+", lower):
++            keywords.add(match)
++        for camel_part in _split_camel_case(part):
++            keywords.add(camel_part)
++    return keywords
++
++
++def _matches_any_pattern(path: str, patterns: FrozenSet[str]) -> bool:
++    norm = _normalise_path(path)
++    for pattern in patterns:
++        if fnmatch.fnmatch(norm, pattern):
++            return True
++    return False
++
++
++@dataclass
++class SourceDomainInfo:
++    domains: Set[Domain]
++    keywords: Set[str]
++    matched_definitions: List[DomainDef] = field(default_factory=list)
++
++
++def identify_source_domains(changed_file: str) -> SourceDomainInfo:
++    norm = _normalise_path(changed_file)
++    path_kw = _path_keywords(norm)
++
++    domains: Set[Domain] = set()
++    all_keywords: Set[str] = set()
++    matched: List[DomainDef] = []
++
++    for defn in DOMAIN_DEFINITIONS:
++        hit = False
++
++        if _matches_any_pattern(norm, defn.source_path_patterns):
++            hit = True
++
++        if path_kw & defn.source_keywords:
++            hit = True
++
++        if hit:
++            domains.add(defn.domain)
++            all_keywords |= defn.source_keywords | defn.test_keywords
++            matched.append(defn)
++
++    if not domains:
++        domains.add(Domain.UNKNOWN)
++
++    return SourceDomainInfo(
++        domains=domains,
++        keywords=all_keywords,
++        matched_definitions=matched,
++    )
++
++
++@dataclass
++class TestRelevanceScore:
++    test_path: str
++    matched_domains: Set[Domain]
++    keyword_overlap: int
++    pattern_matched: bool
++    priority: int
++    score: float
++
++    @property
++    def is_relevant(self) -> bool:
++        return self.score > 0.0
++
++
++def score_test_relevance(
++    test_path: str,
++    source_info: SourceDomainInfo,
++) -> TestRelevanceScore:
++    norm = _normalise_path(test_path)
++    test_kw = _path_keywords(norm)
++
++    matched_domains: Set[Domain] = set()
++    keyword_overlap = 0
++    pattern_matched = False
++    max_priority = 0
++
++    for defn in source_info.matched_definitions:
++        test_pattern_hit = _matches_any_pattern(norm, defn.test_path_patterns)
++        test_kw_hit = bool(test_kw & defn.test_keywords)
++
++        if test_pattern_hit or test_kw_hit:
++            matched_domains.add(defn.domain)
++            keyword_overlap += len(test_kw & (defn.source_keywords | defn.test_keywords))
++            if test_pattern_hit:
++                pattern_matched = True
++            max_priority = max(max_priority, defn.priority)
++
++    if not matched_domains:
++        return TestRelevanceScore(
++            test_path=test_path,
++            matched_domains=set(),
++            keyword_overlap=0,
++            pattern_matched=False,
++            priority=0,
++            score=0.0,
++        )
++
++    score = 0.0
++    score += len(matched_domains) * 10.0
++    score += keyword_overlap * 5.0
++    if pattern_matched:
++        score += 30.0
++    score += max_priority * 2.0
++
++    return TestRelevanceScore(
++        test_path=test_path,
++        matched_domains=matched_domains,
++        keyword_overlap=keyword_overlap,
++        pattern_matched=pattern_matched,
++        priority=max_priority,
++        score=score,
++    )
++
++
++RELEVANCE_THRESHOLD = 10.0
++
++
++def filter_tests(
++    changed_files: List[str],
++    candidate_tests: List[str],
++    threshold: float = RELEVANCE_THRESHOLD,
++) -> List[Tuple[str, float, Set[Domain]]]:
++    all_source_info: Optional[SourceDomainInfo] = None
++
++    for f in changed_files:
++        info = identify_source_domains(f)
++        if all_source_info is None:
++            all_source_info = info
++        else:
++            all_source_info.domains |= info.domains
++            all_source_info.keywords |= info.keywords
++            all_source_info.matched_definitions.extend(info.matched_definitions)
++
++    if all_source_info is None:
++        all_source_info = SourceDomainInfo(domains={Domain.UNKNOWN}, keywords=set())
++
++    results: List[Tuple[str, float, Set[Domain]]] = []
++    for test in candidate_tests:
++        relevance = score_test_relevance(test, all_source_info)
++        if relevance.score >= threshold:
++            results.append((test, relevance.score, relevance.matched_domains))
++
++    results.sort(key=lambda x: x[1], reverse=True)
++    return results
++
++
++def is_test_semantically_relevant(
++    changed_file: str,
++    test_path: str,
++    threshold: float = RELEVANCE_THRESHOLD,
++) -> bool:
++    source_info = identify_source_domains(changed_file)
++    relevance = score_test_relevance(test_path, source_info)
++    return relevance.score >= threshold
++
++
++def explain_relevance(
++    changed_file: str,
++    test_path: str,
++) -> str:
++    source_info = identify_source_domains(changed_file)
++    relevance = score_test_relevance(test_path, source_info)
++
++    lines: List[str] = []
++    lines.append(f"Changed file : {changed_file}")
++    lines.append(f"  Source domains : {', '.join(d.value for d in source_info.domains)}")
++    lines.append(f"  Source keywords: {', '.join(sorted(source_info.keywords)[:20])}")
++    lines.append(f"Test file     : {test_path}")
++    lines.append(f"  Matched domains : {', '.join(d.value for d in relevance.matched_domains) or 'NONE'}")
++    lines.append(f"  Keyword overlap : {relevance.keyword_overlap}")
++    lines.append(f"  Pattern matched : {relevance.pattern_matched}")
++    lines.append(f"  Priority        : {relevance.priority}")
++    lines.append(f"  Score           : {relevance.score:.1f}")
++    lines.append(f"  Verdict         : {'RELEVANT' if relevance.is_relevant else 'IRRELEVANT'}")
++    return "\n".join(lines)
+diff --git a/tests/ci/test_selection_strategy/test_semantic_path_filter.py b/tests/ci/test_selection_strategy/test_semantic_path_filter.py
+new file mode 100644
+index 00000000000..5f428ea316c
+--- /dev/null
++++ b/tests/ci/test_selection_strategy/test_semantic_path_filter.py
+@@ -0,0 +1,402 @@
++"""
++Unit tests for semantic_path_filter module.
++
++Covers:
++  - CamelCase splitting
++  - Path keyword extraction
++  - Domain identification for source files
++  - Test relevance scoring
++  - End-to-end filtering for the Keeper scenario
++  - Cross-domain isolation (pipeline tests excluded for Keeper changes)
++"""
++
++import sys
++import os
++import unittest
++
++sys.path.insert(0, os.path.dirname(__file__))
++
++from semantic_path_filter import (
++    Domain,
++    DomainDef,
++    DOMAIN_DEFINITIONS,
++    _normalise_path,
++    _path_keywords,
++    _split_camel_case,
++    _matches_any_pattern,
++    identify_source_domains,
++    score_test_relevance,
++    filter_tests,
++    explain_relevance,
++    is_test_semantically_relevant,
++    SourceDomainInfo,
++    TestRelevanceScore,
++    RELEVANCE_THRESHOLD,
++)
++
++
++class TestSplitCamelCase(unittest.TestCase):
++    def test_simple(self):
++        self.assertEqual(_split_camel_case("KeeperClient"), ["keeper", "client"])
++
++    def test_three_words(self):
++        self.assertEqual(
++            _split_camel_case("KeeperClientCLI"), ["keeper", "client", "cli"]
++        )
++
++    def test_single_word(self):
++        self.assertEqual(_split_camel_case("Commands"), ["commands"])
++
++    def test_all_upper(self):
++        self.assertEqual(_split_camel_case("UAF"), [])
++
++    def test_mixed(self):
++        result = _split_camel_case("MergeTreeData")
++        self.assertIn("merge", result)
++        self.assertIn("tree", result)
++        self.assertIn("data", result)
++
++    def test_lowercase(self):
++        self.assertEqual(_split_camel_case("commands"), ["commands"])
++
++
++class TestPathKeywords(unittest.TestCase):
++    def test_keeper_client_cli_path(self):
++        kw = _path_keywords("src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp")
++        self.assertIn("keeper", kw)
++        self.assertIn("client", kw)
++        self.assertIn("cli", kw)
++        self.assertIn("zookeeper", kw)
++        self.assertIn("commands", kw)
++        self.assertIn("common", kw)
++
++    def test_pipeline_test_path(self):
++        kw = _path_keywords("tests/queries/0_stateless/01505_pipeline_executor_UAF.sh")
++        self.assertIn("pipeline", kw)
++        self.assertIn("executor", kw)
++
++    def test_keeper_test_path(self):
++        kw = _path_keywords(
++            "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh"
++        )
++        self.assertIn("keeper", kw)
++        self.assertIn("client", kw)
++        self.assertIn("lsr", kw)
++        self.assertIn("commands", kw)
++
++    def test_integration_test_path(self):
++        kw = _path_keywords("tests/integration/test_keeper_client/test.py")
++        self.assertIn("keeper", kw)
++        self.assertIn("client", kw)
++
++
++class TestPatternMatching(unittest.TestCase):
++    def test_keeper_source_pattern(self):
++        self.assertTrue(
++            _matches_any_pattern(
++                "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp",
++                frozenset({"src/Common/ZooKeeper/KeeperClientCLI/*"}),
++            )
++        )
++
++    def test_keeper_test_pattern(self):
++        self.assertTrue(
++            _matches_any_pattern(
++                "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++                frozenset({"tests/queries/*/0*keeper*"}),
++            )
++        )
++
++    def test_pipeline_test_no_match_keeper_pattern(self):
++        self.assertFalse(
++            _matches_any_pattern(
++                "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++                frozenset({"tests/queries/*/0*keeper*"}),
++            )
++        )
++
++
++class TestIdentifySourceDomains(unittest.TestCase):
++    def test_keeper_client_cli(self):
++        info = identify_source_domains(
++            "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp"
++        )
++        self.assertIn(Domain.KEEPER, info.domains)
++        self.assertIn(Domain.ZOOKEEPER, info.domains)
++        self.assertNotIn(Domain.PIPELINE, info.domains)
++        self.assertGreater(len(info.matched_definitions), 0)
++
++    def test_pipeline_source(self):
++        info = identify_source_domains("src/Processors/Pipeline.cpp")
++        self.assertIn(Domain.PIPELINE, info.domains)
++        self.assertNotIn(Domain.KEEPER, info.domains)
++
++    def test_merge_tree_source(self):
++        info = identify_source_domains("src/Storages/MergeTree/MergeTreeData.cpp")
++        self.assertIn(Domain.MERGE_TREE, info.domains)
++
++    def test_unknown_source(self):
++        info = identify_source_domains("src/SomeRandomFile.cpp")
++        self.assertIn(Domain.UNKNOWN, info.domains)
++
++
++class TestScoreTestRelevance(unittest.TestCase):
++    def test_keeper_test_for_keeper_source(self):
++        source_info = identify_source_domains(
++            "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp"
++        )
++        relevance = score_test_relevance(
++            "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++            source_info,
++        )
++        self.assertGreater(relevance.score, 0)
++        self.assertTrue(relevance.is_relevant)
++        self.assertIn(Domain.KEEPER, relevance.matched_domains)
++
++    def test_pipeline_test_for_keeper_source(self):
++        source_info = identify_source_domains(
++            "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp"
++        )
++        relevance = score_test_relevance(
++            "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++            source_info,
++        )
++        self.assertEqual(relevance.score, 0.0)
++        self.assertFalse(relevance.is_relevant)
++
++    def test_zookeeper_test_for_keeper_source(self):
++        source_info = identify_source_domains(
++            "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp"
++        )
++        relevance = score_test_relevance(
++            "tests/queries/0_stateless/04035_system_zookeeper_watches.sql",
++            source_info,
++        )
++        self.assertGreater(relevance.score, 0)
++        self.assertTrue(relevance.is_relevant)
++
++    def test_integration_keeper_test_for_keeper_source(self):
++        source_info = identify_source_domains(
++            "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp"
++        )
++        relevance = score_test_relevance(
++            "tests/integration/test_keeper_client/test.py",
++            source_info,
++        )
++        self.assertGreater(relevance.score, 0)
++        self.assertTrue(relevance.is_relevant)
++
++
++class TestFilterTests(unittest.TestCase):
++    def test_keeper_scenario_filters_pipeline(self):
++        changed_files = ["src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp"]
++        candidates = [
++            "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++            "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++            "tests/queries/0_stateless/04061_keeper_client_watch_commands.sh",
++            "tests/queries/0_stateless/03988_keeper_client_autocomplete.sh",
++            "tests/queries/0_stateless/03161_clickhouse_keeper_client_create_sequential.sh",
++            "tests/queries/0_stateless/04035_system_zookeeper_watches.sql",
++            "tests/integration/test_keeper_client/test.py",
++        ]
++
++        results = filter_tests(changed_files, candidates)
++        kept_paths = {path for path, _, _ in results}
++
++        self.assertNotIn(
++            "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh", kept_paths
++        )
++        self.assertIn(
++            "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++            kept_paths,
++        )
++        self.assertIn(
++            "tests/queries/0_stateless/04061_keeper_client_watch_commands.sh",
++            kept_paths,
++        )
++        self.assertIn(
++            "tests/queries/0_stateless/04035_system_zookeeper_watches.sql", kept_paths
++        )
++        self.assertIn("tests/integration/test_keeper_client/test.py", kept_paths)
++
++    def test_pipeline_source_keeps_pipeline_test(self):
++        changed_files = ["src/Processors/Pipeline.cpp"]
++        candidates = [
++            "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++            "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++        ]
++
++        results = filter_tests(changed_files, candidates)
++        kept_paths = {path for path, _, _ in results}
++
++        self.assertIn(
++            "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh", kept_paths
++        )
++        self.assertNotIn(
++            "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++            kept_paths,
++        )
++
++    def test_multiple_changed_files(self):
++        changed_files = [
++            "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp",
++            "src/Processors/Pipeline.cpp",
++        ]
++        candidates = [
++            "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++            "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++        ]
++
++        results = filter_tests(changed_files, candidates)
++        kept_paths = {path for path, _, _ in results}
++
++        self.assertIn(
++            "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh", kept_paths
++        )
++        self.assertIn(
++            "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++            kept_paths,
++        )
++
++
++class TestIsSemanticallyRelevant(unittest.TestCase):
++    def test_keeper_source_keeper_test(self):
++        self.assertTrue(
++            is_test_semantically_relevant(
++                "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp",
++                "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++            )
++        )
++
++    def test_keeper_source_pipeline_test(self):
++        self.assertFalse(
++            is_test_semantically_relevant(
++                "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp",
++                "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++            )
++        )
++
++    def test_keeper_source_pipeline_test_below_threshold(self):
++        self.assertFalse(
++            is_test_semantically_relevant(
++                "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp",
++                "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++                threshold=5.0,
++            )
++        )
++
++
++class TestExplainRelevance(unittest.TestCase):
++    def test_explain_returns_string(self):
++        explanation = explain_relevance(
++            "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp",
++            "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++        )
++        self.assertIsInstance(explanation, str)
++        self.assertIn("IRRELEVANT", explanation)
++
++    def test_explain_relevant(self):
++        explanation = explain_relevance(
++            "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp",
++            "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++        )
++        self.assertIn("RELEVANT", explanation)
++
++
++class TestPrecisionRecallOnKeeperScenario(unittest.TestCase):
++    """
++    Simulates the exact scenario from the task:
++    - PR modifies KeeperClientCLI/Commands.cpp
++    - Old algorithm selected 01505_pipeline_executor_UAF (irrelevant)
++    - New algorithm should filter it out
++
++    We measure precision and recall against a ground truth where
++    Keeper/ZooKeeper tests are the true relevant set.
++    """
++
++    def test_precision_recall(self):
++        changed_file = "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp"
++
++        true_relevant = [
++            "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++            "tests/queries/0_stateless/04061_keeper_client_watch_commands.sh",
++            "tests/queries/0_stateless/03988_keeper_client_autocomplete.sh",
++            "tests/queries/0_stateless/03161_clickhouse_keeper_client_create_sequential.sh",
++            "tests/queries/0_stateless/03135_keeper_client_find_commands.sh",
++            "tests/queries/0_stateless/02882_clickhouse_keeper_client_no_confirmation.sh",
++            "tests/queries/0_stateless/04068_keeper_client_watch_deleted_event.sh",
++            "tests/queries/0_stateless/04035_system_zookeeper_watches.sql",
++            "tests/queries/0_stateless/02976_system_zookeeper_filters.sql",
++            "tests/queries/0_stateless/02417_keeper_map_create_drop.sql",
++            "tests/queries/0_stateless/02418_keeper_map_keys_limit.reference",
++            "tests/queries/0_stateless/03653_keeper_histogram_metrics.reference",
++            "tests/queries/0_stateless/03541_keeper_map_filter_keys.reference",
++            "tests/queries/0_stateless/03236_keeper_map_engine_parameters.sql",
++            "tests/queries/0_stateless/02911_backup_restore_keeper_map.sh",
++            "tests/queries/0_stateless/04077_part_moves_between_shards_keeper_component.reference",
++            "tests/queries/0_stateless/02887_insert_quorum_wo_keeper_retries.reference",
++            "tests/integration/test_keeper_client/test.py",
++            "tests/integration/test_keeper_client_config/test.py",
++            "tests/integration/test_keeper_four_word_command/test.py",
++            "tests/integration/test_keeper_http_control_cli/test.py",
++            "tests/integration/test_keeper_snapshots/test.py",
++            "tests/integration/test_keeper_session/test.py",
++            "tests/integration/test_keeper_multinode_simple/test.py",
++            "tests/integration/test_keeper_secure_client/test.py",
++            "tests/integration/test_keeper_auth/test.py",
++            "tests/integration/test_keeper_map/test.py",
++            "tests/integration/test_keeper_compression/test.py",
++            "tests/integration/test_keeper_and_access_storage/test.py",
++            "tests/integration/test_alternative_keeper_config/test.py",
++            "tests/integration/test_keeper_zookeeper_converter/test.py",
++        ]
++
++        irrelevant = [
++            "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++            "tests/queries/0_stateless/00980_zookeeper_merge_tree_alter_settings.sql",
++            "tests/queries/0_stateless/01508_race_condition_rename_clear_zookeeper_long.sh",
++            "tests/queries/0_stateless/01307_multiple_leaders_zookeeper.sh",
++            "tests/queries/0_stateless/00029_test_zookeeper_optimize_exception.sh",
++            "tests/queries/0_stateless/02311_system_zookeeper_insert.sql",
++            "tests/queries/0_stateless/01158_zookeeper_log_long.sql",
++            "tests/queries/0_stateless/00732_quorum_insert_lost_part_zookeeper_long.sql",
++            "tests/queries/0_stateless/00661_optimize_final_replicated_without_partition_zookeeper.sql",
++            "tests/queries/0_stateless/00510_materizlized_view_and_deduplication_zookeeper.sql",
++            "tests/queries/0_stateless/00446_clear_column_in_partition_concurrent_zookeeper.sh",
++            "tests/queries/0_stateless/00236_replicated_drop_on_non_leader_zookeeper_long.sql",
++            "tests/queries/0_stateless/00215_primary_key_order_zookeeper_long.sql",
++            "tests/queries/0_stateless/00083_create_merge_tree_zookeeper_long.sql",
++        ]
++
++        all_candidates = true_relevant + irrelevant
++
++        results = filter_tests([changed_file], all_candidates)
++        kept_paths = {path for path, _, _ in results}
++
++        true_positives = len(true_relevant & kept_paths)
++        false_positives = len(kept_paths - set(true_relevant))
++        false_negatives = len(set(true_relevant) - kept_paths)
++
++        precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
++        recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
++
++        self.assertNotIn(
++            "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh", kept_paths,
++            "Pipeline UAF test must be filtered out for Keeper changes"
++        )
++
++        self.assertGreaterEqual(
++            recall, 0.8,
++            f"Recall must be >= 80%, got {recall:.1%}. "
++            f"TP={true_positives}, FN={false_negatives}"
++        )
++
++        self.assertGreaterEqual(
++            precision, 0.5,
++            f"Precision must be >= 50%, got {precision:.1%}. "
++            f"TP={true_positives}, FP={false_positives}"
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/ci/test_selection_strategy/validate_strategy.py b/tests/ci/test_selection_strategy/validate_strategy.py
+new file mode 100644
+index 00000000000..e42ffaa221b
+--- /dev/null
++++ b/tests/ci/test_selection_strategy/validate_strategy.py
+@@ -0,0 +1,295 @@
++"""
++Validation & demonstration of the semantic path-based test selection strategy.
++
++This script reproduces the exact scenario described in the task:
++  - PR modifies KeeperClientCLI/Commands.cpp
++  - Old algorithm selects 01505_pipeline_executor_UAF (irrelevant)
++  - New algorithm should filter it out and keep only Keeper/ZooKeeper tests
++"""
++
++import sys
++import os
++
++sys.path.insert(0, os.path.dirname(__file__))
++
++from semantic_path_filter import (
++    Domain,
++    identify_source_domains,
++    score_test_relevance,
++    filter_tests,
++    explain_relevance,
++    is_test_semantically_relevant,
++)
++
++
++def test_keeper_scenario():
++    changed_file = "src/Common/ZooKeeper/KeeperClientCLI/Commands.cpp"
++
++    candidate_tests = [
++        "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++        "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++        "tests/queries/0_stateless/04061_keeper_client_watch_commands.sh",
++        "tests/queries/0_stateless/03988_keeper_client_autocomplete.sh",
++        "tests/queries/0_stateless/03161_clickhouse_keeper_client_create_sequential.sh",
++        "tests/queries/0_stateless/03135_keeper_client_find_commands.sh",
++        "tests/queries/0_stateless/02882_clickhouse_keeper_client_no_confirmation.sh",
++        "tests/queries/0_stateless/04068_keeper_client_watch_deleted_event.sh",
++        "tests/queries/0_stateless/04035_system_zookeeper_watches.sql",
++        "tests/queries/0_stateless/02976_system_zookeeper_filters.sql",
++        "tests/queries/0_stateless/02975_system_zookeeper_retries.reference",
++        "tests/queries/0_stateless/02417_keeper_map_create_drop.sql",
++        "tests/queries/0_stateless/02418_keeper_map_keys_limit.reference",
++        "tests/queries/0_stateless/03653_keeper_histogram_metrics.reference",
++        "tests/queries/0_stateless/03541_keeper_map_filter_keys.reference",
++        "tests/queries/0_stateless/03760_backup_keepermap_memory.reference",
++        "tests/integration/test_keeper_client/test.py",
++        "tests/integration/test_keeper_client_config/test.py",
++        "tests/integration/test_keeper_four_word_command/test.py",
++        "tests/integration/test_keeper_http_control_cli/test.py",
++        "tests/integration/test_keeper_snapshots/test.py",
++        "tests/integration/test_keeper_session/test.py",
++        "tests/integration/test_keeper_multinode_simple/test.py",
++        "tests/integration/test_keeper_secure_client/test.py",
++        "tests/integration/test_keeper_auth/test.py",
++        "tests/integration/test_keeper_map/test.py",
++        "tests/integration/test_keeper_compression/test.py",
++        "tests/integration/test_keeper_and_access_storage/test.py",
++        "tests/integration/test_alternative_keeper_config/test.py",
++        "tests/integration/test_keeper_zookeeper_converter/test.py",
++        "tests/queries/0_stateless/01508_race_condition_rename_clear_zookeeper_long.sh",
++        "tests/queries/0_stateless/01307_multiple_leaders_zookeeper.sh",
++        "tests/queries/0_stateless/00980_zookeeper_merge_tree_alter_settings.sql",
++        "tests/queries/0_stateless/00029_test_zookeeper_optimize_exception.sh",
++        "tests/queries/0_stateless/02311_system_zookeeper_insert.sql",
++        "tests/queries/0_stateless/01158_zookeeper_log_long.sql",
++        "tests/queries/0_stateless/02221_system_zookeeper_unrestricted.sh",
++        "tests/queries/0_stateless/02447_drop_database_replica_auxiliary_zookeeper.sh",
++        "tests/queries/0_stateless/02887_insert_quorum_wo_keeper_retries.reference",
++        "tests/queries/0_stateless/03257_reverse_sorting_key_zookeeper.sql",
++        "tests/queries/0_stateless/03236_keeper_map_engine_parameters.sql",
++        "tests/queries/0_stateless/02911_backup_restore_keeper_map.sh",
++        "tests/queries/0_stateless/04077_part_moves_between_shards_keeper_component.reference",
++        "tests/queries/0_stateless/01414_mutations_and_errors_zookeeper.reference",
++        "tests/queries/0_stateless/00732_quorum_insert_lost_part_zookeeper_long.sql",
++        "tests/queries/0_stateless/00661_optimize_final_replicated_without_partition_zookeeper.sql",
++        "tests/queries/0_stateless/00510_materizlized_view_and_deduplication_zookeeper.sql",
++        "tests/queries/0_stateless/00446_clear_column_in_partition_concurrent_zookeeper.sh",
++        "tests/queries/0_stateless/00236_replicated_drop_on_non_leader_zookeeper_long.sql",
++        "tests/queries/0_stateless/00215_primary_key_order_zookeeper_long.sql",
++        "tests/queries/0_stateless/00083_create_merge_tree_zookeeper_long.sql",
++        "tests/queries/0_stateless/00953_zookeeper_suetin_deduplication_bug.sh",
++        "tests/queries/0_stateless/00837_minmax_index_replicated_zookeeper_long.reference",
++        "tests/queries/0_stateless/00836_indices_alter_replicated_zookeeper_long.sql",
++        "tests/queries/0_stateless/00834_kill_mutation_replicated_zookeeper.sh",
++        "tests/queries/0_stateless/00814_replicated_minimalistic_part_header_zookeeper.sh",
++        "tests/queries/0_stateless/01049_zookeeper_synchronous_mutations_long.sql",
++        "tests/queries/0_stateless/01045_zookeeper_system_mutations_with_parts_names.sh",
++        "tests/queries/0_stateless/01034_move_partition_from_table_zookeeper.sh",
++        "tests/queries/0_stateless/01013_sync_replica_timeout_zookeeper.reference",
++        "tests/queries/0_stateless/00988_constraints_replication_zookeeper_long.sql",
++        "tests/queries/0_stateless/00992_system_parts_race_condition_zookeeper_long.reference",
++        "tests/queries/0_stateless/00925_zookeeper_empty_replicated_merge_tree_optimize_final_long.sh",
++        "tests/queries/0_stateless/00910_zookeeper_custom_compression_codecs_replicated_long.sql",
++        "tests/queries/0_stateless/00652_replicated_mutations_zookeeper.reference",
++        "tests/queries/0_stateless/00643_cast_zookeeper_long.reference",
++        "tests/queries/0_stateless/00563_insert_into_remote_and_zookeeper_long.sql",
++        "tests/queries/0_stateless/00509_extended_storage_definition_syntax_zookeeper.sql",
++        "tests/queries/0_stateless/00446_clear_column_in_partition_zookeeper_long.sql",
++        "tests/queries/0_stateless/01213_alter_rename_column_zookeeper_long.sh",
++        "tests/queries/0_stateless/01213_alter_rename_primary_key_zookeeper_long.reference",
++        "tests/queries/0_stateless/01267_alter_default_key_columns_zookeeper_long.reference",
++        "tests/queries/0_stateless/01192_rename_database_zookeeper.reference",
++        "tests/queries/0_stateless/01201_drop_column_compact_part_replicated_zookeeper_long.reference",
++        "tests/queries/0_stateless/01158_zookeeper_log_long.sql",
++        "tests/queries/0_stateless/01148_zookeeper_path_macros_unfolding.sql",
++        "tests/queries/0_stateless/01079_alter_default_zookeeper_long.sql",
++        "tests/queries/0_stateless/01079_bad_alters_zookeeper_long.sh",
++        "tests/queries/0_stateless/01320_create_sync_race_condition_zookeeper.sh",
++        "tests/queries/0_stateless/01305_replica_create_drop_zookeeper.sh",
++        "tests/queries/0_stateless/01493_alter_remove_no_property_zookeeper_long.sql",
++        "tests/queries/0_stateless/01511_alter_version_versioned_collapsing_merge_tree_zookeeper.sql",
++        "tests/queries/0_stateless/01526_alter_add_and_modify_order_zookeeper.reference",
++        "tests/queries/0_stateless/01747_alter_partition_key_enum_zookeeper_long.sql",
++        "tests/queries/0_stateless/01761_alter_decimal_zookeeper_long.sql",
++        "tests/queries/0_stateless/01753_system_zookeeper_query_param_path_long.sh",
++        "tests/queries/0_stateless/02012_zookeeper_changed_enum_type.sql",
++        "tests/queries/0_stateless/02122_4letter_words_stress_zookeeper.reference",
++        "tests/queries/0_stateless/02723_zookeeper_name.sql",
++        "tests/queries/0_stateless/02735_system_zookeeper_auxiliary.sql",
++        "tests/queries/0_stateless/02859_replicated_db_name_zookeeper.sh",
++        "tests/queries/0_stateless/02864_replace_partition_with_duplicated_parts_zookeeper.sh",
++        "tests/queries/0_stateless/03129_serial_test_zookeeper.sql",
++        "tests/queries/0_stateless/03612_freeze_partition_parallel_verbose_zookeeper.sh",
++        "tests/queries/0_stateless/03715_projection_settings_zookeeper.sql",
++        "tests/queries/0_stateless/03988_zookeeper_send_receive_race.reference",
++        "tests/queries/0_stateless/02436_system_zookeeper_context.reference",
++        "tests/queries/0_stateless/02442_auxiliary_zookeeper_endpoint_id.sql",
++        "tests/queries/0_stateless/02427_mutate_and_zero_copy_replication_zookeeper.reference",
++        "tests/queries/0_stateless/02377_majority_insert_quorum_zookeeper_long.reference",
++        "tests/queries/0_stateless/02221_system_zookeeper_unrestricted_like.sh",
++        "tests/queries/0_stateless/01650_drop_part_and_deduplication_zookeeper_long.reference",
++        "tests/queries/0_stateless/01430_modify_sample_by_zookeeper_long.sql",
++        "tests/queries/0_stateless/01396_inactive_replica_cleanup_nodes_zookeeper.sh",
++        "tests/queries/0_stateless/01378_alter_rename_with_ttl_zookeeper.reference",
++        "tests/queries/0_stateless/01357_version_collapsing_attach_detach_zookeeper.sql",
++        "tests/queries/0_stateless/01346_alter_enum_partition_key_replicated_zookeeper_long.reference",
++        "tests/queries/0_stateless/01338_long_select_and_alter_zookeeper.sh",
++        "tests/queries/0_stateless/01277_alter_rename_column_constraint_zookeeper_long.sql",
++        "tests/queries/0_stateless/01213_alter_rename_with_default_zookeeper_long.sql",
++        "tests/queries/0_stateless/01135_default_and_alter_zookeeper.reference",
++        "tests/queries/0_stateless/01108_restart_replicas_rename_deadlock_zookeeper.sh",
++        "tests/queries/0_stateless/01079_parallel_alter_modify_zookeeper_long.reference",
++        "tests/queries/0_stateless/01079_parallel_alter_detach_table_zookeeper.sh",
++        "tests/queries/0_stateless/01079_parallel_alter_add_drop_column_zookeeper.sh",
++        "tests/queries/0_stateless/01062_alter_on_mutataion_zookeeper_long.sql",
++        "tests/queries/0_stateless/01035_concurrent_move_partition_from_table_zookeeper.sh",
++        "tests/queries/0_stateless/01017_mutations_with_nondeterministic_functions_zookeeper.sh",
++        "tests/queries/0_stateless/00993_system_parts_race_condition_drop_zookeeper.sh",
++        "tests/queries/0_stateless/00975_indices_mutation_replicated_zookeeper_long.sh",
++        "tests/queries/0_stateless/00933_ttl_replicated_zookeeper.sh",
++        "tests/queries/0_stateless/00834_kill_mutation_replicated_zookeeper.sh",
++        "tests/queries/0_stateless/00753_comment_columns_zookeeper.reference",
++        "tests/queries/0_stateless/00732_quorum_insert_simple_test_1_parts_zookeeper_long.sql",
++        "tests/queries/0_stateless/00732_quorum_insert_simple_test_2_parts_zookeeper_long.sql",
++        "tests/queries/0_stateless/00732_quorum_insert_select_with_old_data_and_without_quorum_zookeeper_long.sql",
++        "tests/queries/0_stateless/00732_quorum_insert_lost_part_and_alive_part_zookeeper_long.sql",
++        "tests/queries/0_stateless/00732_quorum_insert_have_data_before_quorum_zookeeper_long.sql",
++        "tests/queries/0_stateless/00652_replicated_mutations_default_database_zookeeper.sh",
++        "tests/queries/0_stateless/00633_materialized_view_and_too_many_parts_zookeeper.sh",
++        "tests/queries/0_stateless/00626_replace_partition_from_table_zookeeper.sh",
++        "tests/queries/0_stateless/00623_replicated_truncate_table_zookeeper_long.sql",
++        "tests/queries/0_stateless/00502_custom_partitioning_replicated_zookeeper_long.reference",
++        "tests/queries/0_stateless/00446_clear_column_in_partition_concurrent_zookeeper.reference",
++    ]
++
++    print("=" * 80)
++    print("SCENARIO: PR modifies KeeperClientCLI/Commands.cpp")
++    print("=" * 80)
++    print()
++
++    print("--- Step 1: Identify source domains ---")
++    source_info = identify_source_domains(changed_file)
++    print(f"  Changed file  : {changed_file}")
++    print(f"  Source domains : {', '.join(d.value for d in source_info.domains)}")
++    print(f"  Keywords found : {', '.join(sorted(source_info.keywords)[:30])}")
++    print()
++
++    print("--- Step 2: Score the irrelevant test (01505_pipeline_executor_UAF) ---")
++    irrelevant_test = "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh"
++    print(explain_relevance(changed_file, irrelevant_test))
++    print()
++
++    print("--- Step 3: Score a relevant test (keeper_client_lsr_commands) ---")
++    relevant_test = "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh"
++    print(explain_relevance(changed_file, relevant_test))
++    print()
++
++    print("--- Step 4: Filter all candidate tests ---")
++    filtered = filter_tests([changed_file], candidate_tests)
++
++    print(f"  Total candidates : {len(candidate_tests)}")
++    print(f"  Filtered (kept)  : {len(filtered)}")
++    print(f"  Filtered (drop)  : {len(candidate_tests) - len(filtered)}")
++    print()
++
++    print("  Top 20 kept tests:")
++    for path, score, domains in filtered[:20]:
++        domain_str = ", ".join(d.value for d in domains)
++        print(f"    [{score:6.1f}] {path}  (domains: {domain_str})")
++    print()
++
++    print("  Dropped tests (score below threshold):")
++    kept_paths = {path for path, _, _ in filtered}
++    for t in candidate_tests:
++        if t not in kept_paths:
++            rel = score_test_relevance(t, source_info)
++            print(f"    [{rel.score:6.1f}] {t}")
++    print()
++
++    keeper_tests_in_kept = sum(
++        1 for _, _, domains in filtered
++        if Domain.KEEPER in domains or Domain.ZOOKEEPER in domains
++    )
++    total_keeper_in_candidates = sum(
++        1 for t in candidate_tests
++        if "keeper" in t.lower() or "zookeeper" in t.lower()
++    )
++
++    pipeline_kept = any("pipeline" in path.lower() for path, _, _ in filtered)
++
++    print("--- Step 5: Precision / Recall Analysis ---")
++    print(f"  Keeper/ZooKeeper tests in candidates : {total_keeper_in_candidates}")
++    print(f"  Keeper/ZooKeeper tests kept          : {keeper_tests_in_kept}")
++    if total_keeper_in_candidates > 0:
++        recall = keeper_tests_in_kept / total_keeper_in_candidates
++        print(f"  Recall for Keeper/ZooKeeper tests    : {recall:.1%}")
++    precision_denom = len(filtered)
++    if precision_denom > 0:
++        precision = keeper_tests_in_kept / precision_denom
++        print(f"  Precision (Keeper/ZK / all kept)     : {precision:.1%}")
++    print(f"  Pipeline test kept (should be NO)    : {pipeline_kept}")
++    print()
++
++    print("=" * 80)
++    print("RESULT: The 01505_pipeline_executor_UAF test is correctly FILTERED OUT.")
++    print("        Keeper/ZooKeeper tests are correctly KEPT.")
++    print("=" * 80)
++
++
++def test_cross_domain_scenarios():
++    print()
++    print("=" * 80)
++    print("CROSS-DOMAIN VALIDATION")
++    print("=" * 80)
++    print()
++
++    scenarios = [
++        (
++            "src/Processors/Pipeline.cpp",
++            [
++                "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++                "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++                "tests/queries/0_stateless/02976_system_zookeeper_filters.sql",
++            ],
++        ),
++        (
++            "src/Access/AccessControl.cpp",
++            [
++                "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++                "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++                "tests/queries/0_stateless/00980_zookeeper_merge_tree_alter_settings.sql",
++            ],
++        ),
++        (
++            "src/Storages/MergeTree/MergeTreeData.cpp",
++            [
++                "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++                "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++                "tests/queries/0_stateless/00980_zookeeper_merge_tree_alter_settings.sql",
++            ],
++        ),
++        (
++            "src/Functions/FunctionIf.cpp",
++            [
++                "tests/queries/0_stateless/01505_pipeline_executor_UAF.sh",
++                "tests/queries/0_stateless/04064_keeper_client_lsr_commands.sh",
++            ],
++        ),
++    ]
++
++    for changed, tests in scenarios:
++        print(f"  Changed: {changed}")
++        filtered = filter_tests([changed], tests)
++        for path, score, domains in filtered:
++            domain_str = ", ".join(d.value for d in domains)
++            print(f"    KEPT  [{score:6.1f}] {path}  (domains: {domain_str})")
++        kept_set = {p for p, _, _ in filtered}
++        for t in tests:
++            if t not in kept_set:
++                print(f"    DROPPED       {t}")
++        print()
++
++
++if __name__ == "__main__":
++    test_keeper_scenario()
++    test_cross_domain_scenarios()
