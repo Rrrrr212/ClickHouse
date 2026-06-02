@@ -1907,6 +1907,65 @@ class Targeting:
                         top_score = s
         effective_min = min(MAX_EFFECTIVE_MIN, max(MIN_SCORE, top_score / MAX_SCORE_RATIO))
         all_ranked = sorted(width_score, key=sort_key)
+
+        # Semantic Path Filter: If the PR touches ONLY files belonging to a specific isolated domain
+        # (e.g. Keeper/ZooKeeper), filter out tests that are clearly unrelated (e.g. they don't contain
+        # domain keywords in their name). This increases precision for domain-isolated PRs and prevents
+        # broad infrastructure tests from polluting the results.
+        STRICT_DOMAINS = {
+            "keeper": ["keeper", "zookeeper"],
+            "kafka": ["kafka"],
+            "rabbitmq": ["rabbitmq"],
+            "s3": ["s3"],
+            "azure": ["azure"],
+            "hdfs": ["hdfs"],
+            "mysql": ["mysql"],
+            "postgres": ["postgres", "postgresql"],
+            "sqlite": ["sqlite"],
+            "mongodb": ["mongodb", "mongo"],
+            "redis": ["redis"],
+            "cassandra": ["cassandra"],
+            "parquet": ["parquet"],
+            "arrow": ["arrow"],
+            "protobuf": ["protobuf"],
+            "avro": ["avro"]
+        }
+        
+        cpp_files = list(dict.fromkeys(f for f, ln in changed_lines if f.endswith('.cpp') or f.endswith('.h')))
+        if cpp_files:
+            for domain_name, keywords in STRICT_DOMAINS.items():
+                is_isolated = all(
+                    any(kw in f.lower() for kw in keywords)
+                    for f in cpp_files
+                )
+                if is_isolated:
+                    filtered_ranked = []
+                    for t in all_ranked:
+                        t_lower = t.lower()
+                        if any(kw in t_lower for kw in keywords):
+                            filtered_ranked.append(t)
+                            
+                    # Only apply filter if we still have some tests left,
+                    # otherwise fallback to all_ranked (don't return empty).
+                    if filtered_ranked:
+                        dropped = len(all_ranked) - len(filtered_ranked)
+                        all_ranked = filtered_ranked
+                        
+                        # Also filter guarantees so they don't inject unrelated tests
+                        if hasattr(self, '_broad_tier2_guarantee'):
+                            self._broad_tier2_guarantee = [
+                                t for t in self._broad_tier2_guarantee
+                                if any(kw in t.lower() for kw in keywords)
+                            ]
+                        if hasattr(self, '_keyword_guarantee'):
+                            self._keyword_guarantee = [
+                                t for t in self._keyword_guarantee
+                                if any(kw in t.lower() for kw in keywords)
+                            ]
+                            
+                        print(f"[find_tests] semantic filter: {domain_name} domain isolated, dropped {dropped} unrelated tests")
+                    break
+
         ranked = [t for t in all_ranked if width_score[t] >= effective_min][:MAX_OUTPUT_TESTS]
 
         # Broad-tier2 guarantee: ensure the top-N high-cov_regions broad-tier2 tests
