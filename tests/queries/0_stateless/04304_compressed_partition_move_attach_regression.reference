@@ -1,0 +1,9 @@
+after_move
+2	30	gamma
+2	40	delta
+1	10	alpha
+1	20	beta
+after_attach
+2	alpha	beta
+1	10	alpha
+1	20	beta
