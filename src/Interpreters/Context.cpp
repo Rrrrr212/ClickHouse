@@ -5950,6 +5950,16 @@ std::shared_ptr<QueryLog> Context::getQueryLog() const
     return shared->system_logs->query_log;
 }
 
+std::shared_ptr<SlowQueryLog> Context::getSlowQueryLog() const
+{
+    SharedLockGuard lock(shared->mutex);
+
+    if (!shared->system_logs)
+        return {};
+
+    return shared->system_logs->slow_log;
+}
+
 std::shared_ptr<QueryMetricLog> Context::getQueryMetricLog() const
 {
     SharedLockGuard lock(shared->mutex);

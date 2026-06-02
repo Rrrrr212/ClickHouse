@@ -62,6 +62,7 @@
 #include <Interpreters/ReplaceQueryParameterVisitor.h>
 #include <Interpreters/SelectIntersectExceptQueryVisitor.h>
 #include <Interpreters/SelectQueryOptions.h>
+#include <Interpreters/SlowQueryMonitor.h>
 #include <Interpreters/TransactionLog.h>
 #include <Interpreters/executeQuery.h>
 #include <Interpreters/DatabaseCatalog.h>
@@ -709,6 +710,7 @@ static void logQueryFinishImpl(
                 query_log->add(elem);
         }
 
+        SlowQueryMonitor::logIfNeeded(context, elem);
     }
 
     if (query_span && query_span->isTraceEnabled())
@@ -843,6 +845,8 @@ void logQueryException(
         if (auto query_log = context->getQueryLog())
             query_log->add(elem);
     }
+
+    SlowQueryMonitor::logIfNeeded(context, elem);
 
     if (query_span)
     {

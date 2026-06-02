@@ -15,6 +15,7 @@
 
 #define LIST_OF_ALL_SYSTEM_LOGS(M) \
     M(QueryLog,              query_log,            "Contains information about executed queries, for example, start time, duration of processing, error messages.") \
+    M(SlowQueryLog,          slow_log,             "Contains information about queries whose execution time exceeded the configured slow query threshold.") \
     M(QueryThreadLog,        query_thread_log,     "Contains information about threads that execute queries, for example, thread name, thread start time, duration of query processing.") \
     M(PartLog,               part_log,             "This table contains information about events that occurred with data parts in the MergeTree family tables, such as adding or merging data.") \
     M(BackgroundSchedulePoolLog, background_schedule_pool_log, "Contains history of background schedule pool task executions.") \

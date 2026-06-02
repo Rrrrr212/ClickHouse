@@ -2035,6 +2035,12 @@ Possible values:
 - Positive floating-point number in the range [0..1]. For example, if the setting value is `0.5`, about half of the queries are logged in the system tables.
 - 1 — All queries are logged in the system tables.
 )", 0) \
+    DECLARE(Bool, slow_query_log_enable, true, R"(
+Enables writing queries slower than `slow_query_time_threshold_ms` to `system.slow_log`.
+)", 0) \
+    DECLARE(Milliseconds, slow_query_time_threshold_ms, 10000, R"(
+The minimum query execution time in milliseconds required for a finished query to be written to `system.slow_log`.
+)", 0) \
     \
     DECLARE(Bool, log_processors_profiles, true, R"(
 Write time that processor spent during execution/waiting for data to `system.processors_profile_log` table.

@@ -1,0 +1,146 @@
+diff --git a/programs/server/config.xml b/programs/server/config.xml
+index 76f9dadfb26..6d2f2c6b0dd 100644
+--- a/programs/server/config.xml
++++ b/programs/server/config.xml
+@@ -1214,6 +1214,17 @@
+         <!-- storage_policy>local_ssd</storage_policy -->
+     </query_log>
+ 
++    <slow_log>
++        <database>system</database>
++        <table>slow_log</table>
++        <partition_by>toYYYYMM(event_date)</partition_by>
++        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
++        <max_size_rows>1048576</max_size_rows>
++        <reserved_size_rows>8192</reserved_size_rows>
++        <buffer_size_rows_flush_threshold>524288</buffer_size_rows_flush_threshold>
++        <flush_on_crash>false</flush_on_crash>
++    </slow_log>
++
+     <!-- Trace log. Stores stack traces collected by query profilers.
+          See query_profiler_real_time_period_ns and query_profiler_cpu_time_period_ns settings. -->
+     <trace_log>
+diff --git a/src/Core/Settings.cpp b/src/Core/Settings.cpp
+index 7e589082b3c..a9cac02ac1b 100644
+--- a/src/Core/Settings.cpp
++++ b/src/Core/Settings.cpp
+@@ -2034,6 +2034,12 @@ Possible values:
+ - 0 — Queries are not logged in the system tables.
+ - Positive floating-point number in the range [0..1]. For example, if the setting value is `0.5`, about half of the queries are logged in the system tables.
+ - 1 — All queries are logged in the system tables.
++)", 0) \
++    DECLARE(Bool, slow_query_log_enable, true, R"(
++Enables writing queries slower than `slow_query_time_threshold_ms` to `system.slow_log`.
++)", 0) \
++    DECLARE(Milliseconds, slow_query_time_threshold_ms, 10000, R"(
++The minimum query execution time in milliseconds required for a finished query to be written to `system.slow_log`.
+ )", 0) \
+     \
+     DECLARE(Bool, log_processors_profiles, true, R"(
+diff --git a/src/Core/SettingsChangesHistory.cpp b/src/Core/SettingsChangesHistory.cpp
+index fa3d3857eff..8f756214723 100644
+--- a/src/Core/SettingsChangesHistory.cpp
++++ b/src/Core/SettingsChangesHistory.cpp
+@@ -55,6 +55,8 @@ const VersionToSettingsChangesMap & getSettingsChangesHistory()
+             {"query_plan_push_limit_by_into_sort", false, true, "New setting that pushes a per-stream LIMIT BY into the sort pipeline when LIMIT BY's columns are a prefix of ORDER BY, reducing rows flowing through the final merge."},
+             {"query_plan_min_columns_for_join_lazy_indexing", 0, 3, "Control the minimum number of payload columns from the left side required for enabling lazy indexing optimization in JOIN"},
+             {"query_plan_max_limit_for_join_lazy_indexing", 1000, 1000, "Added new setting to control maximum limit value that allows to use query plan for lazy join indexing optimization. If zero, there is no limit"},
++            {"slow_query_log_enable", false, true, "New setting to enable writing slow queries into `system.slow_log`"},
++            {"slow_query_time_threshold_ms", 0, 10000, "New setting to control the slow query logging threshold in milliseconds"},
+         });
+         addSettingsChanges(settings_changes_history, "26.5",
+         {
+diff --git a/src/Interpreters/Context.cpp b/src/Interpreters/Context.cpp
+index a109da20f37..292c872c51b 100644
+--- a/src/Interpreters/Context.cpp
++++ b/src/Interpreters/Context.cpp
+@@ -5950,6 +5950,16 @@ std::shared_ptr<QueryLog> Context::getQueryLog() const
+     return shared->system_logs->query_log;
+ }
+ 
++std::shared_ptr<SlowQueryLog> Context::getSlowQueryLog() const
++{
++    SharedLockGuard lock(shared->mutex);
++
++    if (!shared->system_logs)
++        return {};
++
++    return shared->system_logs->slow_log;
++}
++
+ std::shared_ptr<QueryMetricLog> Context::getQueryMetricLog() const
+ {
+     SharedLockGuard lock(shared->mutex);
+diff --git a/src/Interpreters/Context.h b/src/Interpreters/Context.h
+index 81fb386a420..149080a0954 100644
+--- a/src/Interpreters/Context.h
++++ b/src/Interpreters/Context.h
+@@ -122,6 +122,7 @@ class QueryResultCache;
+ class QueryConditionCache;
+ class ISystemLog;
+ class QueryLog;
++class SlowQueryLog;
+ class QueryMetricLog;
+ class QueryThreadLog;
+ class QueryViewsLog;
+@@ -1551,6 +1552,7 @@ public:
+ 
+     /// Nullptr if the query log is not ready for this moment.
+     std::shared_ptr<QueryLog> getQueryLog() const;
++    std::shared_ptr<SlowQueryLog> getSlowQueryLog() const;
+     std::shared_ptr<QueryThreadLog> getQueryThreadLog() const;
+     std::shared_ptr<QueryViewsLog> getQueryViewsLog() const;
+     std::shared_ptr<TraceLog> getTraceLog() const;
+diff --git a/src/Interpreters/SystemLog.cpp b/src/Interpreters/SystemLog.cpp
+index 00c6f99595c..165d0e6ecba 100644
+--- a/src/Interpreters/SystemLog.cpp
++++ b/src/Interpreters/SystemLog.cpp
+@@ -37,6 +37,7 @@
+ #include <Interpreters/QueryLog.h>
+ #include <Interpreters/QueryMetricLog.h>
+ #include <Interpreters/QueryThreadLog.h>
++#include <Interpreters/SlowQueryMonitor.h>
+ #include <Interpreters/IcebergMetadataLog.h>
+ #include <Interpreters/DeltaMetadataLog.h>
+ #include <Interpreters/QueryViewsLog.h>
+diff --git a/src/Interpreters/SystemLog.h b/src/Interpreters/SystemLog.h
+index dcf52c250fe..afa5fe325c7 100644
+--- a/src/Interpreters/SystemLog.h
++++ b/src/Interpreters/SystemLog.h
+@@ -15,6 +15,7 @@
+ 
+ #define LIST_OF_ALL_SYSTEM_LOGS(M) \
+     M(QueryLog,              query_log,            "Contains information about executed queries, for example, start time, duration of processing, error messages.") \
++    M(SlowQueryLog,          slow_log,             "Contains information about queries whose execution time exceeded the configured slow query threshold.") \
+     M(QueryThreadLog,        query_thread_log,     "Contains information about threads that execute queries, for example, thread name, thread start time, duration of query processing.") \
+     M(PartLog,               part_log,             "This table contains information about events that occurred with data parts in the MergeTree family tables, such as adding or merging data.") \
+     M(BackgroundSchedulePoolLog, background_schedule_pool_log, "Contains history of background schedule pool task executions.") \
+diff --git a/src/Interpreters/executeQuery.cpp b/src/Interpreters/executeQuery.cpp
+index 9e32c35366c..279dde20b71 100644
+--- a/src/Interpreters/executeQuery.cpp
++++ b/src/Interpreters/executeQuery.cpp
+@@ -62,6 +62,7 @@
+ #include <Interpreters/ReplaceQueryParameterVisitor.h>
+ #include <Interpreters/SelectIntersectExceptQueryVisitor.h>
+ #include <Interpreters/SelectQueryOptions.h>
++#include <Interpreters/SlowQueryMonitor.h>
+ #include <Interpreters/TransactionLog.h>
+ #include <Interpreters/executeQuery.h>
+ #include <Interpreters/DatabaseCatalog.h>
+@@ -709,6 +710,7 @@ static void logQueryFinishImpl(
+                 query_log->add(elem);
+         }
+ 
++        SlowQueryMonitor::logIfNeeded(context, elem);
+     }
+ 
+     if (query_span && query_span->isTraceEnabled())
+@@ -844,6 +846,8 @@ void logQueryException(
+             query_log->add(elem);
+     }
+ 
++    SlowQueryMonitor::logIfNeeded(context, elem);
++
+     if (query_span)
+     {
+         query_span->addAttribute("db.statement", elem.query);
