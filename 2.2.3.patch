@@ -1,0 +1,12 @@
+diff --git a/get_diff.py b/get_diff.py
+new file mode 100644
+index 00000000000..23f1e165c06
+--- /dev/null
++++ b/get_diff.py
+@@ -0,0 +1,6 @@
++import subprocess
++try:
++    output = subprocess.check_output(['git', 'diff', 'master'], stderr=subprocess.STDOUT)
++    print(output.decode('utf-8'))
++except subprocess.CalledProcessError as e:
++    print(f"Error: {e.output.decode('utf-8')}")
