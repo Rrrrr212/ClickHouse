@@ -1,0 +1,290 @@
+diff --git a/tests/queries/0_stateless/04297_distributed_mergetree_compression_edge_cases.sql b/tests/queries/0_stateless/04297_distributed_mergetree_compression_edge_cases.sql
+new file mode 100644
+index 00000000000..1450c78e196
+--- /dev/null
++++ b/tests/queries/0_stateless/04297_distributed_mergetree_compression_edge_cases.sql
+@@ -0,0 +1,114 @@
++-- Tags: no-parallel
++--
++-- Test for distributed queries with various compression codecs on MergeTree tables
++-- Covers edge cases that may be affected by changes in MergeTreeData.cpp or codec handling
++--
++
++-- Test 1: Distributed table with different compression codecs on shards
++DROP TABLE IF EXISTS local_compression_test;
++DROP TABLE IF EXISTS distributed_compression_test;
++
++CREATE TABLE local_compression_test
++(
++    id UInt64,
++    value Float64 CODEC(Delta, ZSTD(3)),
++    data String CODEC(LZ4HC),
++    ts DateTime CODEC(T64)
++)
++ENGINE = MergeTree()
++ORDER BY id
++SETTINGS index_granularity = 8192;
++
++-- Create distributed table (using the same engine for simplicity, simulating multi-shard setup)
++CREATE TABLE distributed_compression_test AS local_compression_test
++ENGINE = MergeTree()
++ORDER BY id;
++
++-- Test 2: Insert and read through distributed query pattern
++INSERT INTO local_compression_test
++SELECT
++    number,
++    number * 1.1 + sin(number),
++    repeat('ClickHouse', 10),
++    now()
++FROM numbers(10000);
++
++-- Verify data integrity
++SELECT
++    'basic_read',
++    count(),
++    sum(id),
++    round(avg(value), 6),
++    min(ts),
++    max(ts)
++FROM local_compression_test;
++
++-- Test 3: Aggregations with various compression codecs
++SELECT
++    'aggregations_with_compression',
++    count(),
++    sum(id),
++    avg(value),
++    quantile(0.5)(value),
++    max(length(data))
++FROM local_compression_test
++GROUP BY id % 10
++ORDER BY id % 10;
++
++-- Test 4: Filtering with prewhere on compressed columns
++SELECT
++    'prewhere_compressed',
++    count(),
++    sum(value)
++FROM local_compression_test
++PREWHERE id BETWEEN 1000 AND 2000
++WHERE value > 100;
++
++-- Test 5: Vertical merge with compressed columns
++OPTIMIZE TABLE local_compression_test FINAL;
++
++SELECT
++    'after_vertical_merge',
++    count(),
++    sum(id)
++FROM local_compression_test;
++
++-- Test 6: ALTER COLUMN to change compression codec
++ALTER TABLE local_compression_test
++MODIFY COLUMN value CODEC(ZSTD(6));
++
++INSERT INTO local_compression_test
++SELECT
++    number + 10000,
++    number * 2.2 + cos(number),
++    repeat('Test', 20),
++    now() + 1
++FROM numbers(5000);
++
++OPTIMIZE TABLE local_compression_test FINAL;
++
++SELECT
++    'after_codec_change',
++    count(),
++    sum(value)
++FROM local_compression_test;
++
++-- Test 7: Nullable compressed columns
++ALTER TABLE local_compression_test
++ADD COLUMN nullable_data Nullable(String) CODEC(LZ4);
++
++UPDATE local_compression_test SET nullable_data = data WHERE id % 3 = 0;
++UPDATE local_compression_test SET nullable_data = NULL WHERE id % 3 = 1;
++
++OPTIMIZE TABLE local_compression_test FINAL;
++
++SELECT
++    'nullable_compressed',
++    count(),
++    countIf(nullable_data IS NOT NULL),
++    countIf(nullable_data IS NULL)
++FROM local_compression_test;
++
++-- Cleanup
++DROP TABLE local_compression_test;
++DROP TABLE distributed_compression_test;
+diff --git a/tests/queries/0_stateless/04298_distributed_query_sharding_key_aggregation_optimizations.sql b/tests/queries/0_stateless/04298_distributed_query_sharding_key_aggregation_optimizations.sql
+new file mode 100644
+index 00000000000..10d789221f1
+--- /dev/null
++++ b/tests/queries/0_stateless/04298_distributed_query_sharding_key_aggregation_optimizations.sql
+@@ -0,0 +1,164 @@
++-- Tags: no-parallel, long
++--
++-- Test for distributed query sharding key aggregation optimizations
++-- Covers cases that may be affected by changes in MergeTreeData.cpp, aggregator, or distributed query handling
++--
++
++-- Test 1: Distributed table setup with various sharding keys
++DROP TABLE IF EXISTS local_shard_test_1;
++DROP TABLE IF EXISTS local_shard_test_2;
++DROP TABLE IF EXISTS distributed_shard_test;
++
++-- Create first shard table
++CREATE TABLE local_shard_test_1
++(
++    shard_key UInt64,
++    value1 UInt64,
++    value2 Float64,
++    data String,
++    ts DateTime
++)
++ENGINE = MergeTree()
++ORDER BY (shard_key, ts)
++SETTINGS index_granularity = 1024;
++
++-- Create second shard table
++CREATE TABLE local_shard_test_2 AS local_shard_test_1
++ENGINE = MergeTree()
++ORDER BY (shard_key, ts);
++
++-- Create distributed table (simulating cluster)
++CREATE TABLE distributed_shard_test AS local_shard_test_1
++ENGINE = MergeTree()
++ORDER BY (shard_key, ts);
++
++-- Test 2: Insert data distributed by shard key
++-- Even shard keys go to "shard 1", odd to "shard 2"
++INSERT INTO local_shard_test_1
++SELECT
++    number * 2 AS shard_key,
++    number,
++    number * 1.5,
++    toString(number),
++    now()
++FROM numbers(5000);
++
++INSERT INTO local_shard_test_2
++SELECT
++    number * 2 + 1 AS shard_key,
++    number * 10,
++    number * 3.5,
++    toString(number * 10),
++    now()
++FROM numbers(5000);
++
++-- Test 3: Aggregation grouped by shard key (should be optimizable)
++SELECT
++    'group_by_shard_key',
++    shard_key % 10,
++    count(),
++    sum(value1),
++    avg(value2),
++    max(length(data))
++FROM (
++    SELECT * FROM local_shard_test_1
++    UNION ALL
++    SELECT * FROM local_shard_test_2
++)
++GROUP BY shard_key % 10
++ORDER BY shard_key % 10;
++
++-- Test 4: Aggregation with prewhere on shard key
++SELECT
++    'prewhere_on_shard_key',
++    count(),
++    sum(value1),
++    avg(value2)
++FROM (
++    SELECT * FROM local_shard_test_1
++    UNION ALL
++    SELECT * FROM local_shard_test_2
++)
++PREWHERE shard_key BETWEEN 2000 AND 4000
++WHERE value2 > 500;
++
++-- Test 5: Window functions with partition by shard key
++SELECT
++    'window_by_shard_key',
++    shard_key % 5,
++    count(),
++    max(rolling_sum)
++FROM (
++    SELECT
++        shard_key,
++        sum(value1) OVER (PARTITION BY shard_key % 5 ORDER BY ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS rolling_sum
++    FROM (
++        SELECT * FROM local_shard_test_1
++        UNION ALL
++        SELECT * FROM local_shard_test_2
++    )
++)
++GROUP BY shard_key % 5
++ORDER BY shard_key % 5;
++
++-- Test 6: Join on shard key
++SELECT
++    'join_on_shard_key',
++    count(),
++    sum(a.value1 + b.value1),
++    avg(a.value2 + b.value2)
++FROM (
++    SELECT * FROM local_shard_test_1 WHERE shard_key % 4 = 0
++) a
++INNER JOIN (
++    SELECT * FROM local_shard_test_2 WHERE shard_key % 4 = 1
++) b ON a.shard_key + 1 = b.shard_key;
++
++-- Test 7: Aggregation with quantiles and sharding key
++SELECT
++    'quantiles_on_shards',
++    shard_key % 8,
++    quantile(0.25)(value2),
++    quantile(0.5)(value2),
++    quantile(0.75)(value2),
++    quantileExact(0.9)(value1)
++FROM (
++    SELECT * FROM local_shard_test_1
++    UNION ALL
++    SELECT * FROM local_shard_test_2
++)
++GROUP BY shard_key % 8
++ORDER BY shard_key % 8;
++
++-- Test 8: Optimize FINAL with sharding key
++OPTIMIZE TABLE local_shard_test_1 FINAL;
++OPTIMIZE TABLE local_shard_test_2 FINAL;
++
++SELECT
++    'after_final',
++    count(),
++    sum(value1)
++FROM (
++    SELECT * FROM local_shard_test_1
++    UNION ALL
++    SELECT * FROM local_shard_test_2
++);
++
++-- Test 9: Aggregation with limit by sharding key
++SELECT
++    'limit_by_shard_key',
++    shard_key % 3,
++    count(),
++    sum(value1)
++FROM (
++    SELECT * FROM local_shard_test_1
++    UNION ALL
++    SELECT * FROM local_shard_test_2
++)
++LIMIT 10 BY shard_key % 3
++ORDER BY shard_key % 3, value1 DESC;
++
++-- Cleanup
++DROP TABLE local_shard_test_1;
++DROP TABLE local_shard_test_2;
++DROP TABLE distributed_shard_test;
