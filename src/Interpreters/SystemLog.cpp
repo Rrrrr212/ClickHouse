@@ -37,7 +37,6 @@
 #include <Interpreters/QueryLog.h>
 #include <Interpreters/QueryMetricLog.h>
 #include <Interpreters/QueryThreadLog.h>
-#include <Interpreters/SlowQueryMonitor.h>
 #include <Interpreters/IcebergMetadataLog.h>
 #include <Interpreters/DeltaMetadataLog.h>
 #include <Interpreters/QueryViewsLog.h>
