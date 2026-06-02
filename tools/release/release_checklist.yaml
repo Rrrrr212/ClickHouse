@@ -1,0 +1,187 @@
+# ClickHouse Monthly Release Checklist
+# 
+# This file defines the checklist items for the monthly release process.
+# It is consumed by the release_checklist.py script.
+#
+# Usage:
+#   python3 tools/release/release_checklist.py --month 2026-06
+#   python3 tools/release/release_checklist.py --validate
+#   python3 tools/release/release_checklist.py --report
+
+version: 1
+release_cadence: monthly
+
+phases:
+  - id: pre_release
+    name: "Pre-Release Preparation"
+    order: 1
+    responsible: "Release Manager"
+    checklist:
+      - id: "verify-ci-green"
+        name: "Verify CI is green on the release branch"
+        description: "Check that all CI workflows for the release branch have passed"
+        automated: true
+        check_command: "python3 ci/defs/defs.py --check-branch {branch}"
+
+      - id: "review-changelog"
+        name: "Review and categorize changelog entries"
+        description: "Ensure all merged PRs have proper changelog categories"
+        automated: true
+        check_command: "python3 tests/ci/changelog.py --check-branch {branch}"
+
+      - id: "check-documentation"
+        name: "Verify documentation PRs are merged"
+        description: "Check that all documentation updates for new features are in"
+        automated: true
+        check_command: "python3 -m ci.jobs.docs_job --check-sync"
+
+      - id: "version-bump"
+        name: "Bump version numbers"
+        description: "Update version in all relevant files (CMakeLists.txt, etc.)"
+        automated: true
+        check_command: "python3 tests/ci/version_helper.py --bump {branch}"
+
+      - id: "security-review"
+        name: "Review security changelog"
+        description: "Check for any pending security fixes to include"
+        automated: false
+        manual_steps:
+          - "Review SECURITY.md for any pending advisories"
+          - "Check Bugcrowd for unresolved reports"
+          - "Verify all security patches are cherry-picked"
+
+      - id: "backward-compat"
+        name: "Check backward compatibility"
+        description: "Run backward compatibility tests against previous release"
+        automated: true
+        check_command: "python3 ci/jobs/compatibility_check.py --previous-version {previous_version}"
+
+      - id: "performance-benchmark"
+        name: "Performance benchmark comparison"
+        description: "Run performance benchmarks and compare with previous release"
+        automated: true
+        check_command: "python3 ci/jobs/performance_tests.py --compare-with {previous_version}"
+
+  - id: tag_release
+    name: "Tag and Build Release"
+    order: 2
+    responsible: "Release Manager"
+    checklist:
+      - id: "create-tag"
+        name: "Create the release tag"
+        description: "Tag the release commit with the version number"
+        automated: true
+        check_command: "python3 tests/ci/create_release.py --prepare-release-info --ref {branch} --release-type patch"
+
+      - id: "build-binaries"
+        name: "Build binary packages"
+        description: "Trigger binary builds for all platforms"
+        automated: true
+        check_command: "gh workflow run create_release.yml --ref {branch} --field type=patch"
+
+      - id: "verify-signatures"
+        name: "Verify package signatures"
+        description: "Ensure all packages are properly signed"
+        automated: false
+        manual_steps:
+          - "Download all packages from the release"
+          - "Verify GPG signatures for each package"
+          - "Check SHA256 checksums"
+
+      - id: "docker-build"
+        name: "Build Docker images"
+        description: "Build and push Docker images for the release"
+        automated: true
+        check_command: "python3 tests/ci/official_docker.py --version {version}"
+
+      - id: "install-test"
+        name: "Test installation from packages"
+        description: "Verify that packages install correctly on all supported platforms"
+        automated: true
+        check_command: "python3 ci/jobs/install_check.py --version {version}"
+
+  - id: post_release
+    name: "Post-Release Tasks"
+    order: 3
+    responsible: "Release Manager & Community"
+    checklist:
+      - id: "update-website"
+        name: "Update clickhouse.com download page"
+        description: "Update the download links on the official website"
+        automated: false
+        manual_steps:
+          - "Update download page with new version"
+          - "Update the quick install command if needed"
+          - "Verify the installation page reflects the new version"
+
+      - id: "announce-release"
+        name: "Announce the release"
+        description: "Publish release announcement across all channels"
+        automated: false
+        manual_steps:
+          - "Post on clickhouse.com/blog"
+          - "Post on Slack #announcements channel"
+          - "Post on Telegram channels"
+          - "Post on Bluesky and X (Twitter)"
+          - "Post on LinkedIn"
+
+      - id: "schedule-call"
+        name: "Schedule community release call"
+        description: "Set up the monthly community release call"
+        automated: false
+        manual_steps:
+          - "Create event page on clickhouse.com"
+          - "Update README.md with the new release call link"
+          - "Send calendar invites"
+          - "Prepare presentation slides"
+
+      - id: "update-security"
+        name: "Update security policy"
+        description: "Update SECURITY.md with supported versions"
+        automated: true
+        check_command: "python3 utils/security-generator/generate_security.py --update"
+
+      - id: "close-milestone"
+        name: "Close GitHub milestone"
+        description: "Close the GitHub milestone for this release"
+        automated: true
+        check_command: "gh api repos/ClickHouse/ClickHouse/milestones --jq '.[].number' | xargs -I{} gh milestone close {}"
+
+      - id: "auto-release-check"
+        name: "Configure auto-release for next month"
+        description: "Verify auto-release pipeline is correctly configured"
+        automated: true
+        check_command: "python3 tests/ci/auto_release.py --prepare --post-status"
+
+  - id: retrospective
+    name: "Release Retrospective"
+    order: 4
+    responsible: "Release Manager"
+    checklist:
+      - id: "collect-metrics"
+        name: "Collect release metrics"
+        description: "Gather metrics about the release cycle"
+        automated: false
+        manual_steps:
+          - "Number of PRs included"
+          - "Number of contributors"
+          - "Build time and CI success rate"
+          - "Number of issues resolved"
+
+      - id: "review-issues"
+        name: "Review release issues"
+        description: "Go through issues that were reported during the release"
+        automated: false
+        manual_steps:
+          - "Review any deployment issues reported"
+          - "Document lessons learned"
+          - "Create action items for process improvement"
+
+      - id: "update-checklist"
+        name: "Update this checklist"
+        description: "Update the release checklist based on lessons learned"
+        automated: false
+        manual_steps:
+          - "Review if any steps need to be added or modified"
+          - "Update automation for any new automated steps"
+          - "Commit changes to tools/release/release_checklist.yaml"

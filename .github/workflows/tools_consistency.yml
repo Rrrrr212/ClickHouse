@@ -1,0 +1,36 @@
+name: Tools Consistency Check
+
+on:
+  pull_request:
+    paths:
+      - 'tools/**'
+      - 'README.md'
+  push:
+    branches:
+      - 'master'
+    paths:
+      - 'tools/**'
+      - 'README.md'
+
+jobs:
+  validate-community:
+    runs-on: [self-hosted, style-checker]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Install dependencies
+        run: pip install pyyaml
+      - name: Validate community config
+        run: python3 tools/community/generate_community_links.py --validate
+      - name: Check README consistency
+        run: python3 tools/community/generate_community_links.py --check-readme
+
+  validate-release-checklist:
+    runs-on: [self-hosted, style-checker]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Install dependencies
+        run: pip install pyyaml
+      - name: Validate release checklist config
+        run: python3 tools/release/release_checklist.py --validate
