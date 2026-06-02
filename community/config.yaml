@@ -1,0 +1,94 @@
+# ClickHouse Community Configuration
+# All community links, release schedule, and social media in one place.
+# Used by render_community.py and release_countdown.py.
+
+version: 1
+
+community:
+  slack:
+    name: Slack
+    url: https://clickhouse.com/slack
+    description: Chat with ClickHouse users in real-time
+
+  telegram:
+    name: Telegram
+    url: https://telegram.me/clickhouse_en
+    description: Chat with ClickHouse users in real-time
+
+  youtube:
+    name: YouTube
+    url: https://www.youtube.com/c/ClickHouseDB
+    description: ClickHouse content in video format
+
+  blog:
+    name: Blog
+    url: https://clickhouse.com/blog/
+    description: Articles, announcements, and event reports
+
+  bluesky:
+    name: Bluesky
+    url: https://bsky.app/profile/clickhouse.com
+    description: Short news
+
+  x:
+    name: X
+    url: https://x.com/ClickHouseDB
+    description: Short news
+
+  github_dev:
+    name: Code Browser (github.dev)
+    url: https://github.dev/ClickHouse/ClickHouse
+    description: Source code with syntax highlighting, powered by github.dev
+
+  contacts:
+    name: Contacts
+    url: https://clickhouse.com/company/contact
+    description: Get your questions answered
+
+  official_website:
+    name: Official website
+    url: https://clickhouse.com/
+    description: Quick high-level overview of ClickHouse
+
+  clickhouse_cloud:
+    name: ClickHouse Cloud
+    url: https://clickhouse.cloud
+    description: ClickHouse as a service, built by the creators and maintainers
+
+  tutorial:
+    name: Tutorial
+    url: https://clickhouse.com/docs/getting_started/tutorial/
+    description: Set up and query a small ClickHouse cluster
+
+  documentation:
+    name: Documentation
+    url: https://clickhouse.com/docs/
+    description: More in-depth information
+
+  clickhouse_theater:
+    name: ClickHouse Theater
+    url: https://presentations.clickhouse.com/
+    description: Presentations and videos about ClickHouse
+
+  careers:
+    name: Careers
+    url: https://clickhouse.com/company/careers
+    description: Current openings at ClickHouse
+
+release:
+  version_format: "YY.M"
+  next_version: "26.6"
+  next_release_date: "2026-06-18"
+  release_day_description: "third Thursday of the month"
+  release_call_url_template: "https://clickhouse.com/company/events/v{version}-community-release-call"
+
+channels:
+  stable:
+    description: Latest stable release
+    download_url_template: "https://builds.clickhouse.com/stable/{dir}/clickhouse"
+  lts:
+    description: Long-Term Support release
+    download_url_template: "https://builds.clickhouse.com/lts/{dir}/clickhouse"
+  testing:
+    description: Testing / pre-release builds
+    download_url_template: "https://builds.clickhouse.com/master/{dir}/clickhouse"
