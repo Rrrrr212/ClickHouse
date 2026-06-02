@@ -32,7 +32,6 @@ import tempfile
 import time
 import traceback
 import urllib.parse
-from collections import defaultdict
 
 from ci.praktika import Secret
 from ci.praktika.info import Info
@@ -41,97 +40,26 @@ from ci.praktika.result import Result
 REVIEW_FILE = "./ci/tmp/copilot_review.md"
 GH_PREFIX = "env -u GH_CONFIG_DIR"
 
+# Number of attempts at the full gh-auth + agent run. The agents fetch
+# auth state and make GitHub / model-provider API calls during execution;
+# either layer can hit a transient 5xx / authorization error that no
+# single inner subprocess controls. Re-authing and retrying the whole
+# sequence is the only reliable way to recover.
 MAX_ATTEMPTS = 3
 
+# Robot gh tokens. Used by both backends — Copilot authenticates against
+# GitHub with one of these directly; Codex needs gh authed so the agent's
+# shelled-out `gh` calls (for posting inline comments) succeed. Each
+# attempt picks one in a randomised rotation so a single robot's rate
+# limit or token issue does not fail every attempt.
 ROBOT_NAMES = [
     "/ci/robot-ch-test-poll-copilot",
     "/ci/robot-ch-test-poll-1-copilot",
 ]
 
+# OpenAI API key for the Codex CLI, written into `$CODEX_HOME/auth.json`
+# via `codex login --with-api-key`.
 OPENAI_KEY_SECRET = "/ci/llm/openai_api_key"
-
-GENERIC_PATH_PARTS = {
-    "src",
-    "tests",
-    "queries",
-    "0_stateless",
-    "0_stateful",
-    "integration",
-    "ci",
-    "jobs",
-    "scripts",
-    "programs",
-    "base",
-    "docs",
-    "utils",
-    "tmp",
-}
-
-MODULE_NAME_MAP = {
-    "AggregateFunctions": "Aggregations",
-    "Analyzer": "Parser",
-    "Columns": "Columns",
-    "Common": "Core/Common",
-    "Coordination": "Keeper/Coordination",
-    "Core": "Core/Common",
-    "Databases": "Storage",
-    "Disks": "Storage",
-    "Formats": "Formats",
-    "Functions": "Functions",
-    "Interpreters": "Interpreter/Planner",
-    "Parsers": "Parser",
-    "Processors": "Processors",
-    "QueryPipeline": "Processors",
-    "Storages": "Storage",
-    "TableFunctions": "Functions",
-}
-
-MODULE_SPECIFIC_HINTS = {
-    "Aggregations": [
-        "trace aggregate-state layout, `Arena` lifetime, and `add`/`merge`/`serialize` symmetry",
-        "check two-level aggregation, spill, and distributed merge paths",
-    ],
-    "Columns": [
-        "look for implicit copies, missed `reserve`, and iterator/reference invalidation after inserts or resizes",
-    ],
-    "Formats": [
-        "check schema/version compatibility, deterministic encoding, and unnecessary temporary buffers during I/O",
-    ],
-    "Functions": [
-        "check vectorized execution on `ColumnConst`, `Nullable`, and `LowCardinality` inputs",
-        "look for per-row allocations, repeated conversions, or branch-heavy work inside tight loops",
-    ],
-    "Interpreter/Planner": [
-        "trace planner/executor invariants through settings, distributed execution, and fallback-free error paths",
-    ],
-    "Keeper/Coordination": [
-        "check concurrency, ownership transfer, and metadata divergence after retries or failover",
-    ],
-    "Parser": [
-        "check grammar ambiguity, AST/formatter round-trips, and compatibility with existing syntax",
-    ],
-    "Processors": [
-        "check hot loops, chunk ownership, and pipeline backpressure or cancellation handling",
-    ],
-    "Storage": [
-        "check part/metadata lifecycle, deletion logging, replication consistency, and exception safety under background work",
-    ],
-}
-
-COMMON_RISK_HINTS = [
-    "check integer overflow in `rows * bytes`, offsets, buffer growth, and signed/unsigned conversions; connect findings to the `No magic constants`, `Backward compatibility`, or `Core-area scrutiny` rules when relevant",
-    "check use-after-free via `StringRef`, `Field`, `ColumnPtr`, temporary blocks, or async/background lambdas capturing references; connect findings to `Core-area scrutiny` or `Test coverage`",
-    "check iterator/reference invalidation after `std::vector`/`PODArray` growth, hash-table rehash, or column mutation; connect findings to `Core-area scrutiny` and explain the concrete invalidation path",
-]
-
-
-class _ChangedFileAwareInfo:
-    pr_number = 0
-    pr_url = ""
-    repo_name = ""
-
-    def get_changed_files(self):
-        return []
 
 
 def _join_prompt(*sections):
@@ -147,154 +75,6 @@ def _repo_from_pr_url(pr_url):
 
 def _pr_repository(info):
     return _repo_from_pr_url(info.pr_url) or info.repo_name
-
-
-def _normalize_changed_file_path(path):
-    return path.removeprefix("./").replace("\\", "/")
-
-
-def _module_from_path_component(component):
-    return MODULE_NAME_MAP.get(component)
-
-
-def _infer_changed_file_module(path):
-    normalized = _normalize_changed_file_path(path)
-    lower = normalized.lower()
-    basename = lower.split("/")[-1]
-
-    if "/aggregatefunctions/" in lower or "aggregatefunction" in basename:
-        return "Aggregations"
-    if "/functions/" in lower or "/tablefunctions/" in lower or basename.startswith("function"):
-        return "Functions"
-    if "/storages/" in lower or "/databases/" in lower or "/disks/" in lower or "test_storage_" in basename:
-        return "Storage"
-    if "/parsers/" in lower or "/analyzer/" in lower or basename.startswith("parser"):
-        return "Parser"
-    if "/formats/" in lower:
-        return "Formats"
-    if "/processors/" in lower or "/querypipeline/" in lower:
-        return "Processors"
-    if "/coordination/" in lower or "keeper" in lower:
-        return "Keeper/Coordination"
-    if "/interpreters/" in lower:
-        return "Interpreter/Planner"
-    if "/columns/" in lower:
-        return "Columns"
-    if "/core/" in lower or "/common/" in lower:
-        return "Core/Common"
-
-    for component in normalized.split("/"):
-        mapped = _module_from_path_component(component)
-        if mapped:
-            return mapped
-
-    for component in normalized.split("/"):
-        if component and component not in GENERIC_PATH_PARTS:
-            return component
-
-    return "Cross-module"
-
-
-def _collect_review_focuses(changed_files):
-    normalized_files = [_normalize_changed_file_path(path) for path in changed_files]
-    lowered = " ".join(path.lower() for path in normalized_files)
-    modules = {_infer_changed_file_module(path) for path in normalized_files}
-    focuses = []
-
-    if modules & {
-        "Aggregations",
-        "Columns",
-        "Formats",
-        "Functions",
-        "Interpreter/Planner",
-        "Processors",
-        "Storage",
-    } or any(token in lowered for token in ("merge", "hash", "column", "vector", "loop", "chunk")):
-        focuses.append(
-            "Loops and vectorized paths: look for repeated virtual calls, redundant conversions, branch-heavy per-row work, missed `reserve`, and copies inside tight loops."
-        )
-
-    if modules & {
-        "Aggregations",
-        "Columns",
-        "Core/Common",
-        "Functions",
-        "Storage",
-    } or any(token in lowered for token in ("arena", "allocator", "memory", "cache", "column", "field", "block")):
-        focuses.append(
-            "Memory allocation and object lifetime: prioritize per-row allocations, reusable arenas/buffers, `StringRef` and `Field` lifetimes, and reallocation side effects on references or iterators."
-        )
-
-    if modules & {
-        "Aggregations",
-        "Formats",
-        "Keeper/Coordination",
-        "Parser",
-        "Storage",
-    } or any(token in lowered for token in ("serial", "format", "json", "native", "arrow", "proto", "keeper", "replicated")):
-        focuses.append(
-            "Serialization and compatibility: verify explicit versioning, deterministic encoding, upgrade/downgrade safety, and avoid repeated serialize/deserialize churn or temporary buffers in hot paths."
-        )
-
-    return focuses
-
-
-def _module_hint_lines(changed_files):
-    grouped = defaultdict(list)
-    for path in changed_files:
-        normalized = _normalize_changed_file_path(path)
-        grouped[_infer_changed_file_module(normalized)].append(normalized)
-
-    lines = []
-    for module, files in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))[:8]:
-        preview = ", ".join(f"`{path}`" for path in files[:3])
-        suffix = "" if len(files) <= 3 else f", and {len(files) - 3} more"
-        lines.append(f"- `{module}`: {preview}{suffix}")
-    return lines
-
-
-def _module_specific_hint_lines(changed_files):
-    modules = []
-    for path in changed_files:
-        module = _infer_changed_file_module(path)
-        if module not in modules:
-            modules.append(module)
-
-    lines = []
-    for module in modules[:5]:
-        hints = MODULE_SPECIFIC_HINTS.get(module)
-        if hints:
-            lines.append(f"- `{module}`: {'; '.join(hints)}")
-    return lines
-
-
-def _clickhouse_review_focus(info):
-    changed_files = list(info.get_changed_files() or [])
-    if not changed_files:
-        return ""
-
-    focus_lines = [
-        "ClickHouse-specific review acceleration:",
-        "- Auto-detected changed-file modules:",
-        *_module_hint_lines(changed_files),
-    ]
-
-    performance_focuses = _collect_review_focuses(changed_files)
-    if performance_focuses:
-        focus_lines.append("- Performance-sensitive checks to prioritize:")
-        focus_lines.extend(f"- {focus}" for focus in performance_focuses)
-
-    module_hints = _module_specific_hint_lines(changed_files)
-    if module_hints:
-        focus_lines.append("- Module-specific invariants to trace:")
-        focus_lines.extend(module_hints)
-
-    focus_lines.append("- Common defect patterns to check explicitly:")
-    focus_lines.extend(f"- {hint}" for hint in COMMON_RISK_HINTS)
-    focus_lines.append(
-        "- In every finding, state the affected module from the path-derived hints above. For cross-cutting findings, use `Cross-module`."
-    )
-    return "\n".join(focus_lines)
 
 
 def _pre_review_instructions():
@@ -400,18 +180,9 @@ def _pre_review_output():
     return f"""\
 Output:
 Write a self-contained summary of ALL findings, regardless of previous summaries, as plain Markdown
-to {REVIEW_FILE}. Keep the overall Summary / Findings / Final Verdict structure from
-.claude/skills/review/SKILL.md, start with `---\n#### AI Review`, and use `#####` for section headers.
-Render the `Findings` section as a Markdown table with the exact columns
-`风险等级 | 模块 | 文件位置 | 问题描述 | 修复建议`.
-- `风险等级` uses one of `❌ Blocker`, `⚠️ Major`, or `💡 Nit`.
-- `模块` must be derived from the changed-file module hints in this prompt.
-- `文件位置` uses `path:line` or `path:Lx-Ly` format.
-- `问题描述` must mention the violated invariant, concrete impact, and when relevant cite the matching
-  ClickHouse rule from `.claude/skills/review/SKILL.md`.
-- `修复建议` must be concrete and may include a minimal patch or replacement code block.
-When you see loops, allocations, or serialization changes in performance-sensitive code, prefer a
-specific optimization suggestion over a generic warning.
+to {REVIEW_FILE} using the REQUESTED OUTPUT FORMAT from .claude/skills/review/SKILL.md:
+start with `---
+#### AI Review`, then use ##### for section headers.
 Do NOT post the summary yourself: the job script will post it after you finish.
 """
 
@@ -423,18 +194,23 @@ def _pre_review_prompt(info):
         _review_target(info),
         _pre_review_tools(info.pr_number, repo_name),
         _pre_review_procedure(info.pr_url),
-        _clickhouse_review_focus(info),
         _pre_review_output(),
     )
 
 
 def _reauth_gh():
+    """Force re-auth of the main gh context (outside any GH_CONFIG_DIR override).
+
+    Called at job start regardless of current auth status, so the token is
+    always fresh when the agent invokes `env -u GH_CONFIG_DIR`.
+    """
     from ci.praktika.gh_auth import GHAuth
 
     GHAuth.auth_from_settings()
 
 
 def _post_review():
+    """Post REVIEW_FILE as a PR comment. Raises on failure, failing the job."""
     subprocess.run(
         [
             sys.executable, "-m", "ci.praktika.gh",
@@ -445,6 +221,8 @@ def _post_review():
 
 
 def _drop_stale_review_file():
+    """Remove any leftover REVIEW_FILE so a prior attempt's artifact cannot
+    be mistaken for the result of a later failed attempt."""
     if os.path.exists(REVIEW_FILE):
         try:
             os.unlink(REVIEW_FILE)
@@ -453,6 +231,7 @@ def _drop_stale_review_file():
 
 
 def _gh_auth_with_robot_token(gh_config_dir, robot_name):
+    """Authenticate gh CLI in a scoped GH_CONFIG_DIR using the given robot token."""
     print(f"Using robot: {robot_name}")
     token = Secret.Config(
         name=robot_name, type=Secret.Type.AWS_SSM_PARAMETER
@@ -465,11 +244,19 @@ def _gh_auth_with_robot_token(gh_config_dir, robot_name):
 
 
 def _run_copilot_once(prompt, robot_name):
+    """Run a single attempt of `gh auth login` + `copilot` for one robot."""
     _drop_stale_review_file()
     with tempfile.TemporaryDirectory() as gh_config_dir:
         _gh_auth_with_robot_token(gh_config_dir, robot_name)
         return Result.from_commands_run(
             name="copilot review",
+            # --allow-all: enable all permissions; --allow-all-tools alone hits
+            #   a CLI bug where compound shell commands are denied and the gate
+            #   then tries to escalate to a human (github/copilot-cli#176, #2971)
+            # --no-ask-user: disable ask_user so the agent cannot try to prompt
+            #   for permission in a non-interactive session
+            # --add-dir .: restrict file access to repo root (default, but explicit)
+            # </dev/null: ensure stdin is definitively non-interactive
             command=f"GH_CONFIG_DIR={shlex.quote(gh_config_dir)} "
                     f"copilot -p {shlex.quote(prompt)} --allow-all --no-ask-user "
                     f"--add-dir . --model gpt-5.5 --effort xhigh < /dev/null",
@@ -478,6 +265,16 @@ def _run_copilot_once(prompt, robot_name):
 
 
 def _run_codex_once(prompt, robot_name):
+    """Run a single attempt of `gh auth login` + `codex login` + `codex exec`.
+
+    Codex stores credentials in `$CODEX_HOME/auth.json` and does NOT consult
+    `OPENAI_API_KEY` directly when invoked — you have to run
+    `codex login --with-api-key` first, which reads the key from stdin and
+    writes it into `auth.json`. `CODEX_HOME` is scoped to a per-attempt
+    temporary directory under `./ci/tmp` (not `/tmp`, which codex refuses
+    to use for helper binaries) so the API key never lands on global runner
+    state.
+    """
     _drop_stale_review_file()
     with tempfile.TemporaryDirectory() as gh_config_dir, \
          tempfile.TemporaryDirectory(dir="./ci/tmp") as codex_home:
@@ -494,6 +291,18 @@ def _run_codex_once(prompt, robot_name):
 
         return Result.from_commands_run(
             name="codex review",
+            # -m gpt-5.5: same model the Copilot CLI uses, so
+            #   review quality stays comparable across backends.
+            # -s workspace-write: writable workspace + /tmp + CODEX_HOME,
+            #   read-only elsewhere; sufficient for review output and
+            #   the gh CLI's /tmp config dir.
+            # sandbox_workspace_write.network_access=true: the agent
+            #   shells out to `gh` to post inline comments, which needs
+            #   network.
+            # approval_policy=never: codex `exec` is non-interactive,
+            #   but the approval policy still applies; "never" lets the
+            #   agent execute without blocking on an approval request.
+            # --color never: no ANSI codes in the job log.
             command=f"CODEX_HOME={shlex.quote(codex_home)} "
                     f"GH_CONFIG_DIR={shlex.quote(gh_config_dir)} "
                     f"codex exec "
@@ -508,6 +317,12 @@ def _run_codex_once(prompt, robot_name):
 
 
 def _run(prompt, run_once, agent_name):
+    """Run the chosen agent with retries, then post the review comment.
+
+    Each attempt re-fetches secrets, re-auths the temporary `GH_CONFIG_DIR`,
+    and re-runs the agent. The attempt counts as success only if the
+    subprocess exits 0 AND `REVIEW_FILE` was written with non-empty content.
+    """
     last_error = None
     robots = ROBOT_NAMES.copy()
     random.shuffle(robots)
@@ -529,7 +344,7 @@ def _run(prompt, run_once, agent_name):
             else:
                 last_error = None
                 break
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — broad catch: any exception is retryable here
             last_error = f"{type(e).__name__}: {e}"
             print(f"WARNING: {agent_name} attempt {attempt}/{MAX_ATTEMPTS} raised: {last_error}")
             traceback.print_exc()
@@ -544,6 +359,7 @@ def _run(prompt, run_once, agent_name):
             f"{agent_name} review failed after {MAX_ATTEMPTS} attempts: {last_error}"
         )
 
+    # Post the summary from the job script so the job fails loudly if anything is broken.
     _post_review()
 
 
