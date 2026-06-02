@@ -1,0 +1,735 @@
+diff --git a/tests/queries/0_stateless/04303_distributed_codec_cross_coverage.sql b/tests/queries/0_stateless/04303_distributed_codec_cross_coverage.sql
+new file mode 100644
+index 00000000000..b82b049ec20
+--- /dev/null
++++ b/tests/queries/0_stateless/04303_distributed_codec_cross_coverage.sql
+@@ -0,0 +1,128 @@
++-- Tags: distributed, no-fasttest
++--
++-- Regression test for distributed query + columnar codec cross-coverage.
++-- Previously no test exercised remote() queries against MergeTree tables
++-- with non-trivial codec chains (GCD, T64, Gorilla) under distributed
++-- aggregation and partial column reads.
++--
++-- Scenario: two shards, each holding a MergeTree table with columns using
++-- different codecs. A distributed query performs:
++--   1. Partial column read (only codec columns, skipping others)
++--   2. Distributed aggregation (sum/avg on compressed columns)
++--   3. FINAL merge triggering vertical merge on remote parts
++--   4. Mixed codec layout consistency after OPTIMIZE
++
++DROP TABLE IF EXISTS dist_codec_test;
++DROP TABLE IF EXISTS local_codec_test;
++
++CREATE TABLE local_codec_test
++(
++    id UInt64,
++    -- GCD codec: best for integers with common divisor
++    gcd_col UInt64 CODEC(GCD, LZ4),
++    -- DoubleDelta + T64 + ZSTD: best for monotonically increasing integers
++    dd_t64_col Int64 CODEC(DoubleDelta, T64, ZSTD),
++    -- Gorilla codec: best for floating-point with small deltas
++    gorilla_col Float64 CODEC(Gorilla),
++    -- Plain LZ4 baseline
++    plain_col String CODEC(LZ4),
++    -- No codec (default)
++    no_codec_col UInt32
++)
++ENGINE = MergeTree
++ORDER BY id
++SETTINGS
++    min_bytes_for_wide_part = 0,
++    min_rows_for_wide_part = 0;
++
++-- Insert data with patterns that exercise each codec's compression path
++INSERT INTO local_codec_test
++SELECT
++    number AS id,
++    number * 7 AS gcd_col,                  -- multiples of 7 → GCD = 7
++    toInt64(number * 1000) AS dd_t64_col,   -- monotonic → DoubleDelta + T64
++    number * 0.001 AS gorilla_col,          -- small float deltas → Gorilla
++    toString(number) AS plain_col,
++    toUInt32(number) AS no_codec_col
++FROM numbers(50000);
++
++-- Force part creation
++OPTIMIZE TABLE local_codec_test FINAL;
++
++CREATE TABLE dist_codec_test AS local_codec_test
++ENGINE = Distributed(test_cluster_two_shards, currentDatabase(), local_codec_test);
++
++-- Test 1: Partial column read - only compressed columns
++SELECT '--- Test 1: Partial column read (compressed columns only) ---';
++SELECT
++    count() AS cnt,
++    sum(gcd_col) AS gcd_sum,
++    sum(dd_t64_col) AS dd_sum,
++    sum(gorilla_col) AS gorilla_sum
++FROM dist_codec_test
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 2: Distributed aggregation on codec columns
++SELECT '--- Test 2: Distributed aggregation on codec columns ---';
++SELECT
++    gcd_col % 7 = 0 AS divisible,
++    count() AS cnt,
++    sum(dd_t64_col) AS dd_sum,
++    avg(gorilla_col) AS gorilla_avg
++FROM dist_codec_test
++GROUP BY divisible
++ORDER BY divisible;
++
++-- Test 3: Mixed codec + no_codec column in aggregation
++SELECT '--- Test 3: Mixed codec + no_codec column ---';
++SELECT
++    sum(gcd_col + no_codec_col) AS mixed_sum,
++    sum(dd_t64_col - toInt64(no_codec_col) * 1000) AS diff_sum
++FROM dist_codec_test;
++
++-- Test 4: WHERE predicate on compressed column (tests decompression + filter)
++SELECT '--- Test 4: WHERE on compressed column ---';
++SELECT count()
++FROM dist_codec_test
++WHERE gcd_col % 49 = 0
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 5: ORDER BY on codec column after distributed merge
++SELECT '--- Test 5: ORDER BY on codec column ---';
++SELECT id, gcd_col, dd_t64_col
++FROM dist_codec_test
++ORDER BY id
++LIMIT 10
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 6: Verify data integrity across shards
++SELECT '--- Test 6: Cross-shard data integrity ---';
++SELECT
++    (SELECT sum(gcd_col) FROM dist_codec_test)
++    =
++    (SELECT sum(number * 7) FROM numbers(100000)) AS gcd_integrity,
++    (SELECT sum(dd_t64_col) FROM dist_codec_test)
++    =
++    (SELECT sum(toInt64(number * 1000)) FROM numbers(100000)) AS dd_integrity;
++
++-- Test 7: FINAL query triggering remote vertical merge
++SELECT '--- Test 7: FINAL on distributed ---';
++SELECT count(), sum(gcd_col)
++FROM dist_codec_test FINAL
++SETTINGS prefer_localhost_replica = 0;
++
++-- Cleanup local table parts for codec layout test
++OPTIMIZE TABLE local_codec_test FINAL;
++
++-- Test 8: Read after OPTIMIZE FINAL (verifies merged part codec consistency)
++SELECT '--- Test 8: Post-OPTIMIZE read ---';
++SELECT
++    count() AS cnt,
++    sum(gcd_col) AS gcd_sum,
++    min(dd_t64_col) AS dd_min,
++    max(gorilla_col) AS gorilla_max
++FROM dist_codec_test
++SETTINGS prefer_localhost_replica = 0;
++
++DROP TABLE dist_codec_test;
++DROP TABLE local_codec_test;
+diff --git a/tests/queries/0_stateless/04304_distributed_multi_codec_aggregation.sql b/tests/queries/0_stateless/04304_distributed_multi_codec_aggregation.sql
+new file mode 100644
+index 00000000000..4365779d7b6
+--- /dev/null
++++ b/tests/queries/0_stateless/04304_distributed_multi_codec_aggregation.sql
+@@ -0,0 +1,158 @@
++-- Tags: distributed, no-fasttest, no-parallel
++--
++-- Regression test for distributed aggregation + multi-codec partial column read.
++-- Covers the gap where distributed aggregation only reads a subset of columns
++-- that use different compression codecs (GCD, T64, ZSTD, Gorilla).
++--
++-- The bug scenario: when the remote shard decompresses only the columns
++-- needed for aggregation, a codec chain mismatch or decompression buffer
++-- reuse issue could corrupt data silently.
++--
++-- This test creates a table with 10+ columns using various codecs, then
++-- runs distributed aggregations that touch different column subsets to
++-- verify each codec decompresses correctly in isolation.
++
++DROP TABLE IF EXISTS dist_multi_codec_agg;
++DROP TABLE IF EXISTS local_multi_codec_agg;
++
++CREATE TABLE local_multi_codec_agg
++(
++    key UInt64,
++    -- Group 1: integer codecs
++    gcd_u32 UInt32 CODEC(GCD, LZ4),
++    gcd_u64 UInt64 CODEC(GCD, LZ4),
++    dd_col Int64 CODEC(DoubleDelta, T64, ZSTD),
++    t64_only Int32 CODEC(T64, LZ4),
++    -- Group 2: float codecs
++    gorilla_f64 Float64 CODEC(Gorilla),
++    gorilla_f32 Float32 CODEC(Gorilla),
++    -- Group 3: string/text codecs
++    str_lz4 String CODEC(LZ4),
++    str_zstd String CODEC(ZSTD(3)),
++    -- Group 4: no codec (baseline)
++    plain_u32 UInt32,
++    plain_u64 UInt64,
++    -- Group 5: composite
++    gcd_dd UInt64 CODEC(GCD, DoubleDelta, ZSTD)
++)
++ENGINE = MergeTree
++ORDER BY key
++SETTINGS
++    min_bytes_for_wide_part = 0,
++    min_rows_for_wide_part = 0;
++
++-- Insert data with known patterns for each codec
++INSERT INTO local_multi_codec_agg
++SELECT
++    number AS key,
++    -- GCD columns: multiples of known divisors
++    toUInt32(number * 3) AS gcd_u32,
++    number * 5 AS gcd_u64,
++    -- DoubleDelta: monotonically increasing
++    toInt64(number * 100) AS dd_col,
++    -- T64: small integers
++    toInt32(number % 1000) AS t64_only,
++    -- Gorilla: small float deltas
++    number * 0.5 AS gorilla_f64,
++    toFloat32(number * 0.25) AS gorilla_f32,
++    -- Strings
++    toString(number % 100) AS str_lz4,
++    toString(number % 50) AS str_zstd,
++    -- Plain
++    toUInt32(number) AS plain_u32,
++    number AS plain_u64,
++    -- Composite: GCD + DoubleDelta (multiples of 11, monotonic)
++    number * 11 AS gcd_dd
++FROM numbers(30000);
++
++OPTIMIZE TABLE local_multi_codec_agg FINAL;
++
++CREATE TABLE dist_multi_codec_agg AS local_multi_codec_agg
++ENGINE = Distributed(test_cluster_two_shards, currentDatabase(), local_multi_codec_agg);
++
++-- Test 1: Aggregate only GCD columns (integer codec isolation)
++SELECT '--- Test 1: GCD columns only ---';
++SELECT
++    count() AS cnt,
++    sum(gcd_u32) AS gcd_u32_sum,
++    sum(gcd_u64) AS gcd_u64_sum,
++    gcd_u32_sum = toUInt64(3) * cnt * (cnt - 1) / 2 / cnt AS gcd_u32_ok,
++    gcd_u64_sum = 5 * cnt * (cnt - 1) / 2 / cnt AS gcd_u64_ok
++FROM dist_multi_codec_agg
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 2: Aggregate only float codec columns
++SELECT '--- Test 2: Float codec columns only ---';
++SELECT
++    sum(gorilla_f64) AS f64_sum,
++    sum(gorilla_f32) AS f32_sum,
++    abs(f64_sum - 30000 * 29999 * 0.5 / 2) < 1.0 AS f64_ok,
++    abs(f32_sum - 30000 * 29999 * 0.25 / 2) < 100.0 AS f32_ok
++FROM dist_multi_codec_agg
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 3: Aggregate DoubleDelta + T64 columns
++SELECT '--- Test 3: DoubleDelta + T64 columns ---';
++SELECT
++    sum(dd_col) AS dd_sum,
++    dd_sum = toInt64(100) * 30000 * 29999 / 2 AS dd_ok,
++    sum(t64_only) AS t64_sum
++FROM dist_multi_codec_agg
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 4: Composite codec column (GCD + DoubleDelta + ZSTD)
++SELECT '--- Test 4: Composite codec column ---';
++SELECT
++    sum(gcd_dd) AS composite_sum,
++    composite_sum = 11 * 30000 * 29999 / 2 AS composite_ok
++FROM dist_multi_codec_agg
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 5: Mixed codec aggregation (GCD + Gorilla + plain)
++SELECT '--- Test 5: Mixed codec aggregation ---';
++SELECT
++    sum(gcd_u64 + plain_u64) AS mixed_int_sum,
++    sum(gorilla_f64 + toFloat64(plain_u32)) AS mixed_float_sum
++FROM dist_multi_codec_agg
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 6: GROUP BY on plain column, aggregate codec columns
++SELECT '--- Test 6: GROUP BY plain, aggregate codec ---';
++SELECT
++    key % 1000 AS bucket,
++    count() AS cnt,
++    sum(gcd_u32) AS gcd_sum,
++    sum(gorilla_f64) AS gorilla_sum
++FROM dist_multi_codec_agg
++GROUP BY bucket
++ORDER BY bucket
++LIMIT 5
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 7: HAVING filter on decompressed codec column
++SELECT '--- Test 7: HAVING on codec column ---';
++SELECT
++    gcd_u64 % 5 = 0 AS divisible,
++    count() AS cnt
++FROM dist_multi_codec_agg
++GROUP BY divisible
++HAVING cnt > 10000
++ORDER BY divisible
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 8: String codec columns in aggregation
++SELECT '--- Test 8: String codec columns ---';
++SELECT
++    countDistinct(str_lz4) AS lz4_distinct,
++    countDistinct(str_zstd) AS zstd_distinct
++FROM dist_multi_codec_agg
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 9: All columns hash verification (full decompression check)
++SELECT '--- Test 9: Full column hash ---';
++SELECT groupBitXor(sipHash64(*)) AS hash
++FROM dist_multi_codec_agg
++SETTINGS prefer_localhost_replica = 0;
++
++DROP TABLE dist_multi_codec_agg;
++DROP TABLE local_multi_codec_agg;
+diff --git a/tests/queries/0_stateless/04305_parallel_replicas_codec_granule.sql b/tests/queries/0_stateless/04305_parallel_replicas_codec_granule.sql
+new file mode 100644
+index 00000000000..f0b91963ccf
+--- /dev/null
++++ b/tests/queries/0_stateless/04305_parallel_replicas_codec_granule.sql
+@@ -0,0 +1,139 @@
++-- Tags: no-fasttest
++--
++-- Regression test for distributed query + compression codec + parallel replicas.
++-- Covers the gap where parallel replicas read compressed data from MergeTree
++-- parts with non-default codecs, and the coordinator merges decompressed blocks.
++--
++-- Bug scenario: when parallel replicas are enabled, each replica reads a
++-- subset of granules from the same part. If the codec decompression buffer
++-- is shared or not properly reset between granules, data corruption can
++-- occur silently. This test verifies that each replica correctly decompresses
++-- its assigned granules and the coordinator merges them correctly.
++
++DROP TABLE IF EXISTS pr_codec_test;
++
++CREATE TABLE pr_codec_test
++(
++    id UInt64,
++    shard_id UInt8,
++    -- Multiple codec columns to exercise different decompression paths
++    gcd_col UInt64 CODEC(GCD, LZ4),
++    dd_col Int64 CODEC(DoubleDelta, T64, ZSTD),
++    gorilla_col Float64 CODEC(Gorilla),
++    str_col String CODEC(ZSTD(1)),
++    payload String  -- no codec, baseline
++)
++ENGINE = MergeTree
++PARTITION BY shard_id
++ORDER BY id
++SETTINGS
++    index_granularity = 8192,
++    min_bytes_for_wide_part = 0,
++    min_rows_for_wide_part = 0;
++
++-- Insert data across multiple partitions to ensure granule distribution
++INSERT INTO pr_codec_test
++SELECT
++    number AS id,
++    number % 4 AS shard_id,
++    number * 13 AS gcd_col,
++    toInt64(number * 1000) AS dd_col,
++    number * 0.125 AS gorilla_col,
++    toString(number % 500) AS str_col,
++    repeat('x', 100) AS payload
++FROM numbers(200000);
++
++OPTIMIZE TABLE pr_codec_test FINAL;
++
++-- Test 1: Parallel replicas with partial codec column read
++SELECT '--- Test 1: PR partial codec read ---';
++SELECT
++    count() AS cnt,
++    sum(gcd_col) AS gcd_sum,
++    sum(dd_col) AS dd_sum
++FROM pr_codec_test
++SETTINGS
++    enable_parallel_replicas = 1,
++    max_parallel_replicas = 4,
++    parallel_replicas_for_non_replicated_merge_tree = 1,
++    cluster_for_parallel_replicas = 'parallel_replicas';
++
++-- Test 2: Parallel replicas with all codec columns
++SELECT '--- Test 2: PR all codec columns ---';
++SELECT
++    count() AS cnt,
++    sum(gcd_col) AS gcd_sum,
++    min(dd_col) AS dd_min,
++    max(gorilla_col) AS gorilla_max,
++    countDistinct(str_col) AS str_distinct
++FROM pr_codec_test
++SETTINGS
++    enable_parallel_replicas = 1,
++    max_parallel_replicas = 4,
++    parallel_replicas_for_non_replicated_merge_tree = 1,
++    cluster_for_parallel_replicas = 'parallel_replicas';
++
++-- Test 3: Parallel replicas + GROUP BY on codec column
++SELECT '--- Test 3: PR GROUP BY codec column ---';
++SELECT
++    gcd_col % 13 = 0 AS divisible,
++    count() AS cnt,
++    sum(dd_col) AS dd_sum
++FROM pr_codec_test
++GROUP BY divisible
++ORDER BY divisible
++SETTINGS
++    enable_parallel_replicas = 1,
++    max_parallel_replicas = 4,
++    parallel_replicas_for_non_replicated_merge_tree = 1,
++    cluster_for_parallel_replicas = 'parallel_replicas';
++
++-- Test 4: Parallel replicas + ORDER BY on codec column
++SELECT '--- Test 4: PR ORDER BY codec column ---';
++SELECT id, gcd_col, dd_col
++FROM pr_codec_test
++ORDER BY id
++LIMIT 20
++SETTINGS
++    enable_parallel_replicas = 1,
++    max_parallel_replicas = 4,
++    parallel_replicas_for_non_replicated_merge_tree = 1,
++    cluster_for_parallel_replicas = 'parallel_replicas';
++
++-- Test 5: Parallel replicas + WHERE on compressed column
++SELECT '--- Test 5: PR WHERE on compressed column ---';
++SELECT count(), sum(gcd_col)
++FROM pr_codec_test
++WHERE gorilla_col > 10000.0
++SETTINGS
++    enable_parallel_replicas = 1,
++    max_parallel_replicas = 4,
++    parallel_replicas_for_non_replicated_merge_tree = 1,
++    cluster_for_parallel_replicas = 'parallel_replicas';
++
++-- Test 6: Verify correctness against non-PR execution
++SELECT '--- Test 6: PR vs non-PR correctness ---';
++SELECT
++    (SELECT sum(gcd_col) FROM pr_codec_test
++     SETTINGS enable_parallel_replicas = 1, max_parallel_replicas = 4,
++              parallel_replicas_for_non_replicated_merge_tree = 1,
++              cluster_for_parallel_replicas = 'parallel_replicas')
++    =
++    (SELECT sum(gcd_col) FROM pr_codec_test
++     SETTINGS enable_parallel_replicas = 0) AS gcd_match,
++    (SELECT sum(dd_col) FROM pr_codec_test
++     SETTINGS enable_parallel_replicas = 1, max_parallel_replicas = 4,
++              parallel_replicas_for_non_replicated_merge_tree = 1,
++              cluster_for_parallel_replicas = 'parallel_replicas')
++    =
++    (SELECT sum(dd_col) FROM pr_codec_test
++     SETTINGS enable_parallel_replicas = 0) AS dd_match,
++    (SELECT sum(gorilla_col) FROM pr_codec_test
++     SETTINGS enable_parallel_replicas = 1, max_parallel_replicas = 4,
++              parallel_replicas_for_non_replicated_merge_tree = 1,
++              cluster_for_parallel_replicas = 'parallel_replicas')
++    =
++    (SELECT sum(gorilla_col) FROM pr_codec_test
++     SETTINGS enable_parallel_replicas = 0) AS gorilla_match;
++
++DROP TABLE pr_codec_test;
+diff --git a/tests/queries/0_stateless/04306_distributed_async_insert_codec_network_compression.sh b/tests/queries/0_stateless/04306_distributed_async_insert_codec_network_compression.sh
+new file mode 100644
+index 00000000000..1499332b8d9
+--- /dev/null
++++ b/tests/queries/0_stateless/04306_distributed_async_insert_codec_network_compression.sh
+@@ -0,0 +1,138 @@
++#!/usr/bin/env bash
++# Tags: no-fasttest, long
++#
++# Regression test for distributed async insert + per-column compression codec
++# + network compression interaction.
++#
++# Covers the gap where:
++#   1. Distributed async insert uses network_compression_method (zstd/lz4)
++#   2. Target MergeTree table has per-column codecs (GCD, T64, Gorilla)
++#   3. The interaction between network-level compression and column-level
++#      codecs could cause data corruption during INSERT → SELECT round-trip
++#
++# This test verifies that data inserted through a Distributed table with
++# network compression is correctly stored with column codecs and readable
++# back with identical values.
++
++CUR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++source "$CUR_DIR"/_inc/double_quotes_limited.sh
++
++$CLICKHOUSE_CLIENT --query "DROP TABLE IF EXISTS dist_async_codec_local"
++$CLICKHOUSE_CLIENT --query "DROP TABLE IF EXISTS dist_async_codec"
++
++$CLICKHOUSE_CLIENT --query "
++CREATE TABLE dist_async_codec_local
++(
++    id UInt64,
++    gcd_col UInt64 CODEC(GCD, LZ4),
++    dd_col Int64 CODEC(DoubleDelta, T64, ZSTD),
++    gorilla_col Float64 CODEC(Gorilla),
++    str_col String CODEC(ZSTD(1))
++)
++ENGINE = MergeTree
++ORDER BY id
++SETTINGS
++    min_bytes_for_wide_part = 0,
++    min_rows_for_wide_part = 0
++"
++
++$CLICKHOUSE_CLIENT --query "
++CREATE TABLE dist_async_codec AS dist_async_codec_local
++ENGINE = Distributed(test_cluster_two_shards, currentDatabase(), dist_async_codec_local)
++"
++
++# Test 1: Async insert with ZSTD network compression
++$CLICKHOUSE_CLIENT --query "
++SET distributed_foreground_insert = 0, network_compression_method = 'zstd';
++INSERT INTO dist_async_codec
++SELECT
++    number,
++    number * 7,
++    toInt64(number * 1000),
++    number * 0.5,
++    toString(number)
++FROM numbers(10000)
++"
++
++# Wait for async insert to flush
++sleep 2
++$CLICKHOUSE_CLIENT --query "SYSTEM FLUSH DISTRIBUTED dist_async_codec"
++
++# Verify data integrity
++echo "--- Test 1: Async insert with ZSTD network compression ---"
++$CLICKHOUSE_CLIENT --query "
++SELECT
++    count() AS cnt,
++    sum(gcd_col) AS gcd_sum,
++    gcd_sum = 7 * 10000 * 9999 / 2 AS gcd_ok,
++    sum(dd_col) = toInt64(1000) * 10000 * 9999 / 2 AS dd_ok
++FROM dist_async_codec
++"
++
++# Test 2: Async insert with LZ4 network compression
++$CLICKHOUSE_CLIENT --query "DROP TABLE IF EXISTS dist_async_codec_local"
++$CLICKHOUSE_CLIENT --query "DROP TABLE IF EXISTS dist_async_codec"
++
++$CLICKHOUSE_CLIENT --query "
++CREATE TABLE dist_async_codec_local
++(
++    id UInt64,
++    gcd_col UInt64 CODEC(GCD, LZ4),
++    gorilla_col Float64 CODEC(Gorilla)
++)
++ENGINE = MergeTree
++ORDER BY id
++SETTINGS
++    min_bytes_for_wide_part = 0,
++    min_rows_for_wide_part = 0
++"
++
++$CLICKHOUSE_CLIENT --query "
++CREATE TABLE dist_async_codec AS dist_async_codec_local
++ENGINE = Distributed(test_cluster_two_shards, currentDatabase(), dist_async_codec_local)
++"
++
++$CLICKHOUSE_CLIENT --query "
++SET distributed_foreground_insert = 0, network_compression_method = 'lz4';
++INSERT INTO dist_async_codec
++SELECT
++    number,
++    number * 11,
++    number * 0.25
++FROM numbers(5000)
++"
++
++sleep 2
++$CLICKHOUSE_CLIENT --query "SYSTEM FLUSH DISTRIBUTED dist_async_codec"
++
++echo "--- Test 2: Async insert with LZ4 network compression ---"
++$CLICKHOUSE_CLIENT --query "
++SELECT
++    count() AS cnt,
++    sum(gcd_col) = 11 * 5000 * 4999 / 2 AS gcd_ok,
++    abs(sum(gorilla_col) - 5000 * 4999 * 0.25 / 2) < 1.0 AS gorilla_ok
++FROM dist_async_codec
++"
++
++# Test 3: Foreground insert (synchronous) with network compression
++$CLICKHOUSE_CLIENT --query "
++SET distributed_foreground_insert = 1, network_compression_method = 'zstd';
++INSERT INTO dist_async_codec
++SELECT
++    number + 5000,
++    (number + 5000) * 11,
++    (number + 5000) * 0.25
++FROM numbers(5000)
++"
++
++echo "--- Test 3: Foreground insert with ZSTD ---"
++$CLICKHOUSE_CLIENT --query "
++SELECT
++    count() AS cnt,
++    cnt = 10000 AS count_ok,
++    sum(gcd_col) = 11 * (5000 * 4999 / 2 + 5000 * 5000 + 5000 * 4999 / 2) AS gcd_ok
++FROM dist_async_codec
++"
++
++$CLICKHOUSE_CLIENT --query "DROP TABLE IF EXISTS dist_async_codec"
++$CLICKHOUSE_CLIENT --query "DROP TABLE IF EXISTS dist_async_codec_local"
+diff --git a/tests/queries/0_stateless/04307_distributed_final_vertical_merge_codec.sql b/tests/queries/0_stateless/04307_distributed_final_vertical_merge_codec.sql
+new file mode 100644
+index 00000000000..6db14ae094b
+--- /dev/null
++++ b/tests/queries/0_stateless/04307_distributed_final_vertical_merge_codec.sql
+@@ -0,0 +1,142 @@
++-- Tags: no-fasttest
++--
++-- Regression test for distributed FINAL query + vertical merge + mixed codec layouts.
++--
++-- Covers the gap where:
++--   1. A distributed query with FINAL triggers vertical merge on remote shards
++--   2. Remote shards have parts with mixed compression layouts
++--      (some with compress_per_column_in_compact_parts=true, some false)
++--   3. Vertical merge must correctly handle codec chains during part merging
++--
++-- This test creates parts with different compression layouts, then runs
++-- SELECT FINAL through a Distributed table to verify vertical merge
++-- correctly handles codec chains across mixed-layout parts.
++
++DROP TABLE IF EXISTS dist_final_vertical_codec_local;
++DROP TABLE IF EXISTS dist_final_vertical_codec;
++
++-- Create local table with vertical merge friendly settings
++CREATE TABLE dist_final_vertical_codec_local
++(
++    id UInt64,
++    -- Multiple columns to trigger vertical merge
++    c1 UInt64 CODEC(GCD, LZ4),
++    c2 Int64 CODEC(DoubleDelta, T64, ZSTD),
++    c3 Float64 CODEC(Gorilla),
++    c4 String CODEC(LZ4),
++    c5 UInt32,
++    c6 UInt32,
++    c7 UInt32,
++    c8 UInt32,
++    c9 UInt32,
++    c10 UInt32
++)
++ENGINE = MergeTree
++ORDER BY id
++SETTINGS
++    min_bytes_for_wide_part = 0,
++    min_rows_for_wide_part = 0,
++    vertical_merge_algorithm_min_rows_to_activate = 0,
++    vertical_merge_algorithm_min_columns_to_activate = 0,
++    compress_per_column_in_compact_parts = true;
++
++-- Insert first batch (compress_per_column = true layout)
++INSERT INTO dist_final_vertical_codec_local
++SELECT
++    number,
++    number * 3,
++    toInt64(number * 100),
++    number * 0.1,
++    toString(number % 100),
++    toUInt32(number),
++    toUInt32(number),
++    toUInt32(number),
++    toUInt32(number),
++    toUInt32(number),
++    toUInt32(number)
++FROM numbers(5000);
++
++-- Change compression layout setting
++ALTER TABLE dist_final_vertical_codec_local
++MODIFY SETTING compress_per_column_in_compact_parts = false;
++
++-- Insert second batch (compress_per_column = false layout)
++INSERT INTO dist_final_vertical_codec_local
++SELECT
++    number + 5000,
++    (number + 5000) * 3,
++    toInt64((number + 5000) * 100),
++    (number + 5000) * 0.1,
++    toString((number + 5000) % 100),
++    toUInt32(number + 5000),
++    toUInt32(number + 5000),
++    toUInt32(number + 5000),
++    toUInt32(number + 5000),
++    toUInt32(number + 5000),
++    toUInt32(number + 5000)
++FROM numbers(5000);
++
++-- Create distributed table
++CREATE TABLE dist_final_vertical_codec AS dist_final_vertical_codec_local
++ENGINE = Distributed(test_cluster_two_shards, currentDatabase(), dist_final_vertical_codec_local);
++
++-- Test 1: SELECT FINAL triggers vertical merge on remote
++SELECT '--- Test 1: SELECT FINAL with mixed codec layouts ---';
++SELECT
++    count() AS cnt,
++    sum(c1) AS c1_sum,
++    sum(c2) AS c2_sum,
++    countDistinct(c4) AS c4_distinct
++FROM dist_final_vertical_codec FINAL
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 2: Verify data integrity after FINAL
++SELECT '--- Test 2: Data integrity after FINAL ---';
++SELECT
++    cnt = 20000 AS count_ok,
++    c1_sum = 3 * 10000 * 9999 / 2 AS c1_ok,
++    c2_sum = toInt64(100) * 10000 * 9999 / 2 AS c2_ok
++FROM
++(
++    SELECT
++        count() AS cnt,
++        sum(c1) AS c1_sum,
++        sum(c2) AS c2_sum
++    FROM dist_final_vertical_codec FINAL
++);
++
++-- Test 3: GROUP BY + FINAL on distributed
++SELECT '--- Test 3: GROUP BY + FINAL ---';
++SELECT
++    id % 1000 AS bucket,
++    count() AS cnt,
++    sum(c1) AS c1_sum,
++    avg(c3) AS c3_avg
++FROM dist_final_vertical_codec FINAL
++GROUP BY bucket
++ORDER BY bucket
++LIMIT 5
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 4: OPTIMIZE FINAL then verify
++OPTIMIZE TABLE dist_final_vertical_codec_local FINAL;
++
++SELECT '--- Test 4: Post-OPTIMIZE FINAL read ---';
++SELECT
++    count() AS cnt,
++    sum(c1) AS c1_sum,
++    min(c2) AS c2_min,
++    max(c3) AS c3_max
++FROM dist_final_vertical_codec
++SETTINGS prefer_localhost_replica = 0;
++
++-- Test 5: Partial column read after vertical merge
++SELECT '--- Test 5: Partial column read post-merge ---';
++SELECT
++    sum(c1 + c5) AS partial_sum,
++    sum(c3 + toFloat64(c6)) AS float_sum
++FROM dist_final_vertical_codec FINAL
++SETTINGS prefer_localhost_replica = 0;
++
++DROP TABLE dist_final_vertical_codec;
++DROP TABLE dist_final_vertical_codec_local;
