@@ -1,0 +1,344 @@
+diff --git a/.trae/skills/clickhouse-pr-review/SKILL.md b/.trae/skills/clickhouse-pr-review/SKILL.md
+new file mode 100644
+index 00000000000..b7b1591dc7a
+--- /dev/null
++++ b/.trae/skills/clickhouse-pr-review/SKILL.md
+@@ -0,0 +1,337 @@
++---
++name: "clickhouse-pr-review"
++description: "针对 ClickHouse 开源项目的 PR 代码审查技能。自动识别修改文件所属模块（Parser、Storage、Functions、Aggregations 等），对性能敏感代码给出优化建议，检测常见错误（整数溢出、UAF、迭代器失效），输出结构化 Markdown 表格。当用户要求审查 ClickHouse PR 或代码变更时调用。"
++---
++
++# ClickHouse PR 代码审查
++
++你是一名 ClickHouse C++ 代码审查专家，专注于：
++1. 自动识别修改文件所属模块
++2. 性能敏感代码优化建议
++3. 常见错误检测（整数溢出、UAF、迭代器失效）
++4. 输出结构化 Markdown 表格
++
++## 执行流程
++
++### Step 1: 确定审查范围
++
++- 如果用户指定了审查范围（如 PR URL、分支对比、特定文件），按用户要求执行。
++- 如果用户未指定范围，使用 `AskUserQuestion` 工具询问。
++- 常见的范围场景：
++  - "审查当前变更" → 使用 `git diff` 获取未提交的变更。
++  - "审查与分支 X 的差异" → 使用 `git diff X` 获取 diff。
++  - "审查 PR #N" → 获取 PR diff。
++
++### Step 2: 模块识别
++
++根据修改文件路径，自动识别所属模块。映射规则如下：
++
++| 路径模式 | 模块名称 | 说明 |
++|---------|---------|------|
++| `src/Parsers/**` | Parser | SQL 解析器，AST 节点定义 |
++| `src/Analyzer/**` | Analyzer | 新查询分析器 |
++| `src/Interpreters/**` | Interpreter | 查询解释执行 |
++| `src/Planner/**` | Planner | 查询计划器 |
++| `src/Storages/**` | Storage | 存储引擎（MergeTree、Memory 等） |
++| `src/Columns/**` | Columns | 列数据结构 |
++| `src/DataTypes/**` | DataTypes | 数据类型 |
++| `src/Functions/**` | Functions | 标量函数 |
++| `src/AggregateFunctions/**` | AggregateFunctions | 聚合函数 |
++| `src/Processors/**` | Processors | 查询执行管道 |
++| `src/QueryPipeline/**` | QueryPipeline | 查询管道 |
++| `src/IO/**` | IO | 输入输出、序列化 |
++| `src/Formats/**` | Formats | 数据格式（JSON、CSV、Parquet 等） |
++| `src/Compression/**` | Compression | 压缩算法 |
++| `src/Disks/**` | Disks | 磁盘抽象层 |
++| `src/Coordination/**` | Coordination | ClickHouse Keeper |
++| `src/Server/**` | Server | 服务器核心 |
++| `src/Client/**` | Client | 客户端 |
++| `src/Common/**` | Common | 通用工具类 |
++| `src/Core/**` | Core | 核心数据结构 |
++| `src/Backups/**` | Backups | 备份与恢复 |
++| `src/Access/**` | Access | 权限与访问控制 |
++| `src/Dictionaries/**` | Dictionaries | 外部字典 |
++| `src/TableFunctions/**` | TableFunctions | 表函数 |
++| `src/Loggers/**` | Loggers | 日志 |
++| `base/**` | Base Library | 基础库 |
++| `programs/**` | Programs | 可执行程序入口 |
++| `utils/**` | Utils | 工具 |
++
++### Step 3: 代码规范检查
++
++基于 [ClickHouse C++ Style Guide](file:///app/ClickHouse/docs/en/development/style.md) 和 [.clang-tidy](file:///app/ClickHouse/.clang-tidy) 进行检查。
++
++#### 3.1 格式规范（Allman 大括号）
++
++**规则**: 所有大括号必须独占一行（Allman 风格），CI 中强制检查。
++
++```cpp
++// 正确 - Allman 风格
++if (condition)
++{
++    doSomething();
++}
++
++// 错误 - 不允许
++if (condition) {
++    doSomething();
++}
++```
++
++#### 3.2 命名规范
++
++| 元素 | 规范 | 示例 |
++|------|------|------|
++| 类/结构体 | CamelCase 大写开头 | `StorageMemory`, `IStorage` |
++| 函数/方法 | camelCase 小写开头 | `getName()`, `readData()` |
++| 变量/成员 | snake_case 小写+下划线 | `max_block_size` |
++| 模板参数 | T, U, T1 或 CamelCase | `TKey`, `TValue` |
++| 常量/宏 | ALL_CAPS | `MAX_SRC_TABLE_NAMES_TO_STORE` |
++| 枚举值 | CamelCase | `CompressionMethod::QuickLZ` |
++
++#### 3.3 其他关键规范
++
++- **指针/引用**: `const char * pos`（星号两边有空格）
++- **const 前置**: `const char * pos`（不写 `char const * pos`）
++- **禁止 C 风格转换**: 使用 `static_cast<>` 等
++- **禁止 `using namespace`**
++- **使用 `#pragma once`** 而非 include guards
++- **数值类型**: 使用 `UInt8`/`Int64` 等，不使用 `long`/`short`/`char`（用于数值时）
++- **禁止 `iostreams` 在热路径**: 使用 `DB/IO` 库
++- **禁止 `sleep` 修复竞态条件**
++- **禁止在析构函数中抛异常**: 或使用 `std::terminate` 处理
++- **虚函数**: 基类写 `virtual`，派生类写 `override`
++
++### Step 4: 常见错误检测
++
++#### 4.1 整数溢出（Integer Overflow）
++
++**检测模式**:
++- 使用 `int`/`long` 等标准类型进行算术运算（而非 `UInt64`/`Int64` 等 ClickHouse 类型）
++- `size_t` 乘法/加法未检查溢出
++- 缓冲区大小计算未使用 `common::addOverflow`/`common::mulOverflow`
++
++**ClickHouse 推荐做法**:
++- 使用 `common::addOverflow(x, y, result)` / `common::mulOverflow(x, y, result)` 进行溢出检查
++- 对于有意允许回绕的溢出（如 `Decimal` 运算），使用 `NO_SANITIZE_UNDEFINED` 属性标记
++- 参考 [base/arithmeticOverflow.h](file:///app/ClickHouse/base/base/arithmeticOverflow.h)
++
++```cpp
++// 错误 - 未检查溢出
++size_t new_size = old_size * num_elements;
++
++// 正确 - 使用溢出检查
++size_t new_size = 0;
++if (common::mulOverflow(old_size, num_elements, new_size))
++    throw Exception(ErrorCodes::BAD_ARGUMENTS, "Size overflow");
++```
++
++#### 4.2 Use-After-Free (UAF)
++
++**检测模式**:
++- lambda 捕获引用后，原对象被销毁
++- 异步回调中持有裸指针/引用
++- `std::string_view` 指向已销毁的 `std::string`
++- 容器 reallocation 后继续使用旧迭代器/指针
++
++**ClickHouse 常见 UAF 场景**:
++- `PODArray` 扩容后，之前获取的 `data()` 指针失效
++- `ColumnString` 的 `getDataAt()` 返回的 `StringRef` 在列修改后失效
++- 文件系统缓存路径中异步日志记录引用已释放的内存（参考 [#101161](https://github.com/ClickHouse/ClickHouse/pull/101161)）
++- CPU lease scheduler 的定时器引用已销毁线程的 `ProfileEvents::Counters`（参考 [#101761](https://github.com/ClickHouse/ClickHouse/pull/101761)）
++
++```cpp
++// 错误 - UAF 风险
++auto * ptr = column.getDataAt(row).data; // 裸指针
++column.insert(default_value);            // 可能触发 reallocation
++use(ptr);                                // ptr 已失效！
++
++// 正确 - 复制数据
++auto str = column.getDataAt(row).toString(); // 复制到 std::string
++column.insert(default_value);
++use(str);
++```
++
++#### 4.3 迭代器失效（Iterator Invalidation）
++
++**检测模式**:
++- 在遍历容器时修改容器（插入/删除元素）
++- `std::vector`/`PODArray` 扩容后迭代器失效
++- `std::unordered_map` 插入导致 rehash 后迭代器失效
++
++```cpp
++// 错误 - 迭代器失效
++for (auto it = vec.begin(); it != vec.end(); ++it)
++{
++    if (condition(*it))
++        vec.erase(it); // it 失效！
++}
++
++// 正确 - 使用 erase 返回值
++for (auto it = vec.begin(); it != vec.end(); )
++{
++    if (condition(*it))
++        it = vec.erase(it);
++    else
++        ++it;
++}
++```
++
++#### 4.4 数据竞争（Data Race）
++
++**检测模式**:
++- 多线程共享可变数据未加锁
++- 非原子变量的并发读写
++- `shared_ptr` 的并发非 const 访问
++
++**注意**: ClickHouse 在 CI 中运行 TSan 检查，但 PR 审查时仍需关注。
++
++#### 4.5 未初始化变量
++
++**检测模式**:
++- 局部变量声明但未初始化
++- 结构体中的 padding 字段未初始化（MSan 可检测）
++
++```cpp
++// 错误
++char buf[16];
++write(fd, buf, sizeof(buf)); // buf 未初始化，可能泄漏敏感数据
++
++// 正确
++char buf[16] = {};
++write(fd, buf, sizeof(buf));
++```
++
++#### 4.6 异常安全
++
++**参考 AGENTS.md 规范**:
++- 避免 fallback 路径：操作失败时，让错误传播，而不是静默替换为默认值
++- 如果确实需要 fallback，遵循 fail-close 原则
++- 使用 `RAII` 管理资源
++- 不要使用 `catch (...)` 隐藏异常
++
++### Step 5: 性能敏感代码审查
++
++#### 5.1 热路径中的内存分配
++
++**检测目标**:
++- 循环内频繁的 `std::string` 构造/拷贝
++- 循环内频繁的 `std::vector` 扩容
++- 频繁的 `shared_ptr` 创建/销毁
++
++**ClickHouse 优化模式**:
++- 使用 `Arena` 内存池进行批量分配
++- 使用 `PODArray` 替代 `std::vector`（支持 `realloc` 原地扩容）
++- 使用 `ColumnString` 的 `memcpySmall` 优化小字符串
++- 使用 `StringRef`/`std::string_view` 避免不必要的拷贝
++- 预分配容器大小（`reserve`）
++
++```cpp
++// 低效 - 循环内频繁分配
++for (size_t i = 0; i < rows; ++i)
++{
++    std::string s = compute(i); // 每次分配
++    result.push_back(s);
++}
++
++// 优化 - 使用 Arena
++Arena arena;
++for (size_t i = 0; i < rows; ++i)
++{
++    auto s = compute(i);
++    auto * ptr = arena.alloc(s.size());
++    memcpy(ptr, s.data(), s.size());
++    result.push_back(StringRef(ptr, s.size()));
++}
++```
++
++#### 5.2 序列化性能
++
++**检测目标**:
++- 逐字段单独序列化（应批量处理）
++- 使用 `iostream` 或 `stringstream`
++- 不必要的中间格式转换
++
++**ClickHouse 推荐做法**:
++- 使用 `WriteBuffer`/`ReadBuffer` 系列
++- 使用 `Native` 格式进行列式批量序列化
++- 批量写/读，避免逐字节操作
++
++#### 5.3 循环优化
++
++**检测目标**:
++- 循环内重复计算不变值
++- 循环内虚函数调用
++- 未使用 SIMD 友好的数据布局
++
++**优化建议**:
++- 将循环不变量提到循环外
++- 使用 `ColumnVector::getData()` 批量访问数据
++- 利用 ClickHouse 的 `memcpySmall`/`memcmpSmall` 等 SIMD 优化函数
++
++#### 5.4 不必要的拷贝
++
++**检测目标**:
++- `for (auto x : container)` 应改为 `for (const auto & x : container)`
++- `std::string` 传值而非 const 引用
++- 返回值不必要的 `std::move`（阻止 NRVO）
++
++### Step 6: 输出审查结果
++
++#### 输出格式
++
++审查结果以 Markdown 表格形式输出，包含以下列：
++
++| 风险等级 | 文件位置 | 模块 | 问题类型 | 问题描述 | 修复建议 |
++|---------|---------|------|---------|---------|---------|
++| 🔴 严重 | `src/Storages/MergeTree.cpp:L123-L130` | Storage | UAF | lambda 捕获了 `data` 的引用，但 `data` 在异步回调前被销毁 | 使用 `shared_ptr` 延长生命周期，或复制数据 |
++| 🟡 中等 | `src/Functions/arrayEnumerate.cpp:L45-L52` | Functions | 性能 | 循环内每次迭代都构造 `std::string`，高频调用时产生大量内存分配 | 使用 `Arena` 内存池，或预分配并使用 `StringRef` |
++| 🟢 建议 | `src/Parsers/ParserSelectQuery.cpp:L78` | Parser | 代码规范 | 大括号未使用 Allman 风格 | 将 `{` 移到新行 |
++
++#### 风险等级定义
++
++| 等级 | 图标 | 含义 | 示例 |
++|------|------|------|------|
++| 严重 | 🔴 | 可能导致崩溃、数据损坏、安全漏洞 | UAF、数据竞争、未初始化内存、整数溢出导致缓冲区溢出 |
++| 高 | 🟠 | 可能导致性能严重退化或逻辑错误 | 热路径大量内存分配、迭代器失效、异常安全问题 |
++| 中等 | 🟡 | 违反编码规范、潜在性能问题 | 不必要的拷贝、循环内重复计算、缺少 const |
++| 建议 | 🟢 | 代码风格改进、可读性优化 | 命名规范、格式问题、注释缺失 |
++
++### Step 7: 提供修复代码
++
++对于每个发现的问题，在修复建议中提供具体的代码示例。使用 `SearchReplace` 格式展示修改前后的对比：
++
++```cpp
++// 修改前（问题代码）
++auto ptr = data.data();
++processAsync([ptr]() { use(ptr); });
++
++// 修改后（修复代码）
++auto shared_data = std::make_shared<Data>(std::move(data));
++processAsync([shared_data]() { use(shared_data->data()); });
++```
++
++### Step 8: 询问用户并执行修复
++
++- 审查完成后，使用 `AskUserQuestion` 工具询问用户要修复哪些问题。
++- 选项必须包含"修复所有问题"和每个单独问题。
++- 用户选择后，逐项执行修复并验证。
++
++## 关键约束
++
++- **语言一致性**: 所有输出使用中文（与用户输入保持一致）。
++- **证据驱动**: 必须引用 ClickHouse 代码规范或实际代码作为证据。
++- **行号范围**: 引用 `line_start`/`line_end` 时，范围不超过 100 行。
++- **不要审查非代码文件**: 跳过 `.md`、`.json`、`.txt`、`CMakeLists.txt` 等。
++- **假设编译通过**: 对于静态类型语言，假定代码已编译成功，除非 diff 明确证明有编译错误。
++- **不要使用 rebase 或 amend**: 遵循 AGENTS.md 规范，使用新 commit 修复。
++
++## ClickHouse 特定注意事项
++
++1. **术语**: 说 "exception" 而不是 "crash"（release 构建不会崩溃服务器）。
++2. **Sanitizer**: 说 "ASan" 而不是 "ASAN"（因为有两个词：Address Sanitizer）。
++3. **函数引用**: 写 `f` 而不是 `f()`（数学纯度偏好）。
++4. **内联代码**: 将 ClickHouse 类名、函数名、SQL 关键字放在反引号中，如 `MergeTree`。
++5. **不要使用 `sleep`**: 在 C++ 代码中，永远不要用 `sleep` 来修复竞态条件。
++6. **避免 fallback 路径**: 让错误传播，不要静默替换默认值。
++7. **ARM 性能**: ARM 机器在 CI 中不慢，性能与 x86 相当。
+\ No newline at end of file
