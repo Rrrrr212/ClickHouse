@@ -59,6 +59,7 @@
 #include <Interpreters/ProcessorsProfileLog.h>
 #include <Interpreters/QueryLog.h>
 #include <Interpreters/QueryMetricLog.h>
+#include <Interpreters/SlowQueryMonitor.h>
 #include <Interpreters/ReplaceQueryParameterVisitor.h>
 #include <Interpreters/SelectIntersectExceptQueryVisitor.h>
 #include <Interpreters/SelectQueryOptions.h>
@@ -149,6 +150,8 @@ namespace Setting
     extern const SettingsBool log_queries;
     extern const SettingsMilliseconds log_queries_min_query_duration_ms;
     extern const SettingsLogQueriesType log_queries_min_type;
+    extern const SettingsBool slow_query_log_enable;
+    extern const SettingsMilliseconds slow_query_time_threshold_ms;
     extern const SettingsFloat log_queries_probability;
     extern const SettingsBool log_query_settings;
     extern const SettingsUInt64 max_ast_depth;
@@ -707,6 +710,31 @@ static void logQueryFinishImpl(
         {
             if (auto query_log = context->getQueryLog())
                 query_log->add(elem);
+        }
+
+        // Slow Query Monitor - log slow queries to system.slow_log
+        if (settings[Setting::slow_query_log_enable])
+        {
+            SlowQueryLogElement slow_elem;
+            slow_elem.event_time = std::chrono::system_clock::to_time_t(time);
+            slow_elem.event_time_microseconds = std::chrono::duration_cast<std::chrono::microseconds>(time.time_since_epoch()).count();
+            slow_elem.query_start_time = elem.query_start_time;
+            slow_elem.query_start_time_microseconds = elem.query_start_time_microseconds;
+            slow_elem.query_duration_ms = elem.query_duration_ms;
+            slow_elem.read_rows = elem.read_rows;
+            slow_elem.read_bytes = elem.read_bytes;
+            slow_elem.written_rows = elem.written_rows;
+            slow_elem.written_bytes = elem.written_bytes;
+            slow_elem.result_rows = elem.result_rows;
+            slow_elem.result_bytes = elem.result_bytes;
+            slow_elem.memory_usage = elem.memory_usage;
+            slow_elem.current_database = elem.current_database;
+            slow_elem.query = elem.query;
+            slow_elem.query_id = elem.client_info.current_query_id;
+            slow_elem.client_info = elem.client_info;
+            slow_elem.log_comment = elem.log_comment;
+
+            SlowQueryMonitor::logSlowQuery(slow_elem, context);
         }
 
     }

@@ -2023,6 +2023,18 @@ Only the queries with the following type will get to the log:
 - Type: milliseconds
 - Default value: 0 (any query)
 )", 0) \
+    DECLARE(Bool, slow_query_log_enable, false, R"(
+Enables or disables the slow query log. When enabled, slow queries are logged to the `system.slow_log` table.
+
+Possible values:
+- 0 — Slow query log is disabled.
+- 1 — Slow query log is enabled.
+)", 0) \
+    DECLARE(Milliseconds, slow_query_time_threshold_ms, 10000, R"(
+Sets the threshold in milliseconds for a query to be considered slow. Queries whose execution time exceeds this threshold are logged to `system.slow_log` (if `slow_query_log_enable` is true).
+
+Default value: 10000 (10 seconds).
+)", 0) \
     DECLARE(UInt64, log_queries_cut_to_length, 100000, R"(
 If query length is greater than a specified threshold (in bytes), then cut query when writing to query log. Also limit the length of printed query in ordinary text log.
 )", 0) \
