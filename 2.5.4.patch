@@ -1,0 +1,78 @@
+diff --git a/src/Core/Settings.cpp b/src/Core/Settings.cpp
+index 7e589082b3c..d1f4875b9a6 100644
+--- a/src/Core/Settings.cpp
++++ b/src/Core/Settings.cpp
+@@ -1974,6 +1974,12 @@ Allows you to select the max window log of ZSTD (it will not be used for MergeTr
+     \
+     DECLARE(UInt64, priority, 0, R"(
+ Priority of the query. 1 - the highest, higher value - lower priority; 0 - do not use priorities.
++)", 0) \
++    DECLARE(Bool, slow_query_log_enable, false, R"(
++Enable or disable logging of slow queries to system.slow_log.
++)", 0) \
++    DECLARE(Milliseconds, slow_query_time_threshold_ms, 10000, R"(
++Threshold in milliseconds for slow query log. Queries taking longer than this will be logged.
+ )", 0) \
+     DECLARE(Bool, log_queries, true, R"(
+ Setting up query logging.
+diff --git a/src/Interpreters/SystemLog.cpp b/src/Interpreters/SystemLog.cpp
+index 00c6f99595c..165d0e6ecba 100644
+--- a/src/Interpreters/SystemLog.cpp
++++ b/src/Interpreters/SystemLog.cpp
+@@ -37,6 +37,7 @@
+ #include <Interpreters/QueryLog.h>
+ #include <Interpreters/QueryMetricLog.h>
+ #include <Interpreters/QueryThreadLog.h>
++#include <Interpreters/SlowQueryMonitor.h>
+ #include <Interpreters/IcebergMetadataLog.h>
+ #include <Interpreters/DeltaMetadataLog.h>
+ #include <Interpreters/QueryViewsLog.h>
+diff --git a/src/Interpreters/SystemLog.h b/src/Interpreters/SystemLog.h
+index dcf52c250fe..1f810515b1d 100644
+--- a/src/Interpreters/SystemLog.h
++++ b/src/Interpreters/SystemLog.h
+@@ -45,6 +45,7 @@
+     M(IcebergMetadataLog,    iceberg_metadata_log, "Contains content of Iceberg metadata files.") \
+     M(DeltaMetadataLog,    delta_lake_metadata_log, "Contains content of Delta metadata files.") \
+     M(PredicateStatisticsLog, predicate_statistics_log, "Contains sampled per-predicate selectivity statistics collected during query execution. Sampling is controlled by predicate_statistics_sample_rate; lower values increase overhead and should be tuned with care.") \
++    M(SlowQueryLog,          slow_log,             "Contains information about slow queries.") \
+ 
+ #define LIST_OF_CLOUD_SYSTEM_LOGS(M) \
+     M(DistributedCacheLog, distributed_cache_log, "Contains the history of all interactions with distributed cache.") \
+diff --git a/src/Interpreters/executeQuery.cpp b/src/Interpreters/executeQuery.cpp
+index 9e32c35366c..46f20bb34fe 100644
+--- a/src/Interpreters/executeQuery.cpp
++++ b/src/Interpreters/executeQuery.cpp
+@@ -59,6 +59,7 @@
+ #include <Interpreters/ProcessorsProfileLog.h>
+ #include <Interpreters/QueryLog.h>
+ #include <Interpreters/QueryMetricLog.h>
++#include <Interpreters/SlowQueryMonitor.h>
+ #include <Interpreters/ReplaceQueryParameterVisitor.h>
+ #include <Interpreters/SelectIntersectExceptQueryVisitor.h>
+ #include <Interpreters/SelectQueryOptions.h>
+@@ -147,6 +148,8 @@ namespace Setting
+     extern const SettingsBool log_profile_events;
+     extern const SettingsUInt64 log_queries_cut_to_length;
+     extern const SettingsBool log_queries;
++    extern const SettingsBool slow_query_log_enable;
++    extern const SettingsMilliseconds slow_query_time_threshold_ms;
+     extern const SettingsMilliseconds log_queries_min_query_duration_ms;
+     extern const SettingsLogQueriesType log_queries_min_type;
+     extern const SettingsFloat log_queries_probability;
+@@ -709,6 +712,15 @@ static void logQueryFinishImpl(
+                 query_log->add(elem);
+         }
+ 
++        SlowQueryMonitor::logSlowQueryIfNeeded(
++            context,
++            elem.query,
++            elem.client_info.current_query_id,
++            elem.query_duration_ms,
++            elem.read_rows,
++            elem.read_bytes,
++            elem.memory_usage);
++
+     }
+ 
+     if (query_span && query_span->isTraceEnabled())

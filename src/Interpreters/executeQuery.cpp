@@ -59,6 +59,7 @@
 #include <Interpreters/ProcessorsProfileLog.h>
 #include <Interpreters/QueryLog.h>
 #include <Interpreters/QueryMetricLog.h>
+#include <Interpreters/SlowQueryMonitor.h>
 #include <Interpreters/ReplaceQueryParameterVisitor.h>
 #include <Interpreters/SelectIntersectExceptQueryVisitor.h>
 #include <Interpreters/SelectQueryOptions.h>
@@ -147,6 +148,8 @@ namespace Setting
     extern const SettingsBool log_profile_events;
     extern const SettingsUInt64 log_queries_cut_to_length;
     extern const SettingsBool log_queries;
+    extern const SettingsBool slow_query_log_enable;
+    extern const SettingsMilliseconds slow_query_time_threshold_ms;
     extern const SettingsMilliseconds log_queries_min_query_duration_ms;
     extern const SettingsLogQueriesType log_queries_min_type;
     extern const SettingsFloat log_queries_probability;
@@ -708,6 +711,15 @@ static void logQueryFinishImpl(
             if (auto query_log = context->getQueryLog())
                 query_log->add(elem);
         }
+
+        SlowQueryMonitor::logSlowQueryIfNeeded(
+            context,
+            elem.query,
+            elem.client_info.current_query_id,
+            elem.query_duration_ms,
+            elem.read_rows,
+            elem.read_bytes,
+            elem.memory_usage);
 
     }
 
