@@ -1,0 +1,400 @@
+diff --git a/community/config.yaml b/community/config.yaml
+new file mode 100644
+index 00000000000..9e14dac5e12
+--- /dev/null
++++ b/community/config.yaml
+@@ -0,0 +1,49 @@
++# Community Configuration for ClickHouse
++
++release:
++  next_date: "2026-06-21"
++  version: "26.6"
++  event_url: "https://clickhouse.com/company/events/v26-6-community-release-call"
++
++community_links:
++  slack:
++    name: Slack
++    url: "https://clickhouse.com/slack"
++  telegram:
++    name: Telegram
++    url: "https://telegram.me/clickhouse_en"
++  youtube:
++    name: YouTube
++    url: "https://www.youtube.com/c/ClickHouseDB"
++  blog:
++    name: Blog
++    url: "https://clickhouse.com/blog/"
++  bluesky:
++    name: Bluesky
++    url: "https://bsky.app/profile/clickhouse.com"
++  x:
++    name: X (Twitter)
++    url: "https://x.com/ClickHouseDB"
++
++official_links:
++  website:
++    name: Official website
++    url: "https://clickhouse.com/"
++  cloud:
++    name: ClickHouse Cloud
++    url: "https://clickhouse.cloud"
++  tutorial:
++    name: Tutorial
++    url: "https://clickhouse.com/docs/getting_started/tutorial/"
++  documentation:
++    name: Documentation
++    url: "https://clickhouse.com/docs/"
++  theater:
++    name: ClickHouse Theater
++    url: "https://presentations.clickhouse.com/"
++  contacts:
++    name: Contacts
++    url: "https://clickhouse.com/company/contact"
++  careers:
++    name: Careers
++    url: "https://clickhouse.com/company/careers"
+diff --git a/tools/install.sh b/tools/install.sh
+new file mode 100644
+index 00000000000..c461cf259a2
+--- /dev/null
++++ b/tools/install.sh
+@@ -0,0 +1,210 @@
++#!/bin/bash
++
++set -euo pipefail
++
++DEFAULT_CHANNEL="stable"
++BASE_URL="https://packages.clickhouse.com"
++
++usage() {
++    cat <<EOF
++ClickHouse Installation Script
++
++Usage: $0 [OPTIONS]
++
++Options:
++  --version VERSION  Specify version to install (e.g., 24.8.1.2318)
++  --channel CHANNEL  Specify channel (stable/lts/testing) [default: $DEFAULT_CHANNEL]
++  --help, -h         Show this help message and exit
++
++Example:
++  $0 --channel testing
++  $0 --version 24.8.1.2318
++EOF
++    exit 0
++}
++
++parse_args() {
++    VERSION=""
++    CHANNEL="$DEFAULT_CHANNEL"
++
++    while [[ $# -gt 0 ]]; do
++        case "$1" in
++            --version)
++                VERSION="$2"
++                shift 2
++                ;;
++            --channel)
++                CHANNEL="$2"
++                shift 2
++                ;;
++            -h|--help)
++                usage
++                ;;
++            *)
++                echo "Error: Unknown option $1" >&2
++                usage
++                ;;
++        esac
++    done
++
++    if [[ ! "$CHANNEL" =~ ^(stable|lts|testing)$ ]]; then
++        echo "Error: Invalid channel $CHANNEL. Must be stable, lts, or testing." >&2
++        usage
++    fi
++}
++
++detect_os() {
++    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
++        echo "linux"
++    elif [[ "$OSTYPE" == "darwin"* ]]; then
++        echo "macos"
++    elif [[ "$OSTYPE" == "freebsd"* ]]; then
++        echo "freebsd"
++    else
++        echo "unknown"
++    fi
++}
++
++detect_arch() {
++    local arch
++    arch=$(uname -m)
++    case "$arch" in
++        x86_64|amd64)
++            echo "amd64"
++            ;;
++        aarch64|arm64)
++            echo "arm64"
++            ;;
++        *)
++            echo "$arch"
++            ;;
++    esac
++}
++
++install_linux() {
++    local channel="$1"
++    local version="$2"
++    local arch
++    arch=$(detect_arch)
++
++    echo "Installing ClickHouse on Linux (${arch}) from ${channel} channel..."
++
++    if command -v apt-get &> /dev/null; then
++        install_deb "$channel" "$version" "$arch"
++    elif command -v yum &> /dev/null || command -v dnf &> /dev/null; then
++        install_rpm "$channel" "$version" "$arch"
++    else
++        echo "Error: Unsupported package manager. Please install manually." >&2
++        exit 1
++    fi
++}
++
++install_deb() {
++    local channel="$1"
++    local version="$2"
++    local arch="$3"
++
++    apt-get update -qq
++    apt-get install -y -qq apt-transport-https ca-certificates dirmngr
++    apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv 8919F6BD2B48D754
++
++    echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] ${BASE_URL}/deb/${channel}/ stable main" | tee /etc/apt/sources.list.d/clickhouse.list
++    mkdir -p /usr/share/keyrings
++    gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv 8919F6BD2B48D754 --export --output /usr/share/keyrings/clickhouse-keyring.gpg
++
++    apt-get update -qq
++
++    if [[ -n "$version" ]]; then
++        apt-get install -y clickhouse-server="$version" clickhouse-client="$version"
++    else
++        apt-get install -y clickhouse-server clickhouse-client
++    fi
++
++    echo "ClickHouse installed successfully!"
++}
++
++install_rpm() {
++    local channel="$1"
++    local version="$2"
++    local arch="$3"
++
++    local yum_cmd
++    if command -v dnf &> /dev/null; then
++        yum_cmd="dnf"
++    else
++        yum_cmd="yum"
++    fi
++
++    "$yum_cmd" install -y -q yum-utils
++    rpm --import "${BASE_URL}/CLICKHOUSE-KEY.GPG"
++    yum-config-manager --add-repo "${BASE_URL}/rpm/${channel}/x86_64"
++
++    if [[ -n "$version" ]]; then
++        "$yum_cmd" install -y "clickhouse-server-${version}" "clickhouse-client-${version}"
++    else
++        "$yum_cmd" install -y clickhouse-server clickhouse-client
++    fi
++
++    echo "ClickHouse installed successfully!"
++}
++
++install_macos() {
++    local channel="$1"
++    local version="$2"
++
++    echo "Installing ClickHouse on macOS from ${channel} channel..."
++
++    if [[ "$channel" == "testing" ]]; then
++        echo "Warning: Testing channel not available for macOS via brew, using stable instead."
++    fi
++
++    if command -v brew &> /dev/null; then
++        brew install clickhouse/clickhouse/clickhouse
++    else
++        echo "Error: Homebrew not found. Please install Homebrew first." >&2
++        exit 1
++    fi
++
++    echo "ClickHouse installed successfully!"
++}
++
++install_freebsd() {
++    local channel="$1"
++    local version="$2"
++
++    echo "Installing ClickHouse on FreeBSD from ${channel} channel..."
++
++    if command -v pkg &> /dev/null; then
++        pkg install -y clickhouse
++    else
++        echo "Error: pkg not found. Please install pkg first." >&2
++        exit 1
++    fi
++
++    echo "ClickHouse installed successfully!"
++}
++
++main() {
++    parse_args "$@"
++
++    local os
++    os=$(detect_os)
++
++    case "$os" in
++        linux)
++            install_linux "$CHANNEL" "$VERSION"
++            ;;
++        macos)
++            install_macos "$CHANNEL" "$VERSION"
++            ;;
++        freebsd)
++            install_freebsd "$CHANNEL" "$VERSION"
++            ;;
++        *)
++            echo "Error: Unsupported operating system $os" >&2
++            exit 1
++            ;;
++    esac
++}
++
++main "$@"
+diff --git a/tools/release_countdown.py b/tools/release_countdown.py
+new file mode 100644
+index 00000000000..9deff6c8a0e
+--- /dev/null
++++ b/tools/release_countdown.py
+@@ -0,0 +1,57 @@
++#!/usr/bin/env python3
++
++import yaml
++import sys
++from datetime import datetime, timezone
++from pathlib import Path
++
++CONFIG_PATH = Path(__file__).parent.parent / "community" / "config.yaml"
++
++
++def load_config():
++    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
++        return yaml.safe_load(f)
++
++
++def calculate_countdown(target_date_str):
++    target_date = datetime.strptime(target_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
++    now = datetime.now(timezone.utc)
++    delta = target_date - now
++
++    if delta.total_seconds() < 0:
++        return "Released!"
++    elif delta.days > 0:
++        return f"{delta.days} days"
++    elif delta.seconds >= 3600:
++        hours = delta.seconds // 3600
++        return f"{hours} hours"
++    elif delta.seconds >= 60:
++        minutes = delta.seconds // 60
++        return f"{minutes} minutes"
++    else:
++        return "Any minute!"
++
++
++def generate_badge(label, message, color):
++    encoded_label = label.replace(" ", "%20")
++    encoded_message = message.replace(" ", "%20")
++    return f"![{label}: {message}](https://img.shields.io/badge/{encoded_label}-{encoded_message}-{color}?style=for-the-badge)"
++
++
++def main():
++    config = load_config()
++    release = config["release"]
++    countdown = calculate_countdown(release["next_date"])
++
++    if countdown == "Released!":
++        badge = generate_badge("Release", countdown, "success")
++    else:
++        badge = generate_badge(f"Next Release ({release['version']})", countdown, "blue")
++
++    print(badge)
++
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tools/update_readme.py b/tools/update_readme.py
+new file mode 100644
+index 00000000000..9cae14ea207
+--- /dev/null
++++ b/tools/update_readme.py
+@@ -0,0 +1,60 @@
++#!/usr/bin/env python3
++
++import yaml
++import re
++from datetime import datetime
++from pathlib import Path
++
++CONFIG_PATH = Path(__file__).parent.parent / "community" / "config.yaml"
++README_PATH = Path(__file__).parent.parent / "README.md"
++
++
++def load_config():
++    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
++        return yaml.safe_load(f)
++
++
++def update_useful_links(readme_content, config):
++    links_section = []
++
++    for key, link in config["official_links"].items():
++        links_section.append(f"* [{link['name']}]({link['url']})")
++
++    for key, link in config["community_links"].items():
++        links_section.append(f"* [{link['name']}]({link['url']})")
++
++    links_section.append("* [Code Browser (github.dev)](https://github.dev/ClickHouse/ClickHouse) with syntax highlighting, powered by github.dev.")
++
++    new_links = "\n".join(links_section)
++    pattern = re.compile(r"## Useful Links\n\n.*?\n\n##", re.DOTALL)
++    replacement = f"## Useful Links\n\n{new_links}\n\n##"
++    return pattern.sub(replacement, readme_content)
++
++
++def update_release_call(readme_content, config):
++    release = config["release"]
++    next_date = datetime.strptime(release["next_date"], "%Y-%m-%d")
++    date_str = next_date.strftime("%B %d, %Y")
++    release_text = f"Join us for the [ClickHouse **{release['version']}** Release Call]({release['event_url']}) on {date_str}."
++
++    pattern = re.compile(r"Join us for the \[ClickHouse \*\*.*?\*\* Release Call\]\(.*?\) on .*?\.")
++    return pattern.sub(release_text, readme_content)
++
++
++def main():
++    config = load_config()
++
++    with open(README_PATH, "r", encoding="utf-8") as f:
++        readme_content = f.read()
++
++    readme_content = update_useful_links(readme_content, config)
++    readme_content = update_release_call(readme_content, config)
++
++    with open(README_PATH, "w", encoding="utf-8") as f:
++        f.write(readme_content)
++
++    print(f"README.md updated successfully from {CONFIG_PATH}")
++
++
++if __name__ == "__main__":
++    main()
