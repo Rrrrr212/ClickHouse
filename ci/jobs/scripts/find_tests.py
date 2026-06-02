@@ -968,34 +968,6 @@ class Targeting:
         ]
         return specific
 
-    @staticmethod
-    def _get_path_semantic_aliases(changed_src_files: list) -> list:
-        semantic_aliases: list = []
-        normalized_paths = [f.replace("\\", "/").lower() for f in changed_src_files]
-
-        if any("keeper" in path or "zookeeper" in path for path in normalized_paths):
-            semantic_aliases.extend([
-                "keeper",
-                "keeper_client",
-                "clickhouse_keeper",
-                "keeper_map",
-                "keepermap",
-                "zookeeper",
-            ])
-
-        return list(dict.fromkeys(semantic_aliases))
-
-    @staticmethod
-    def _filter_tests_by_path_semantics(test_files: list, semantic_aliases: list) -> list:
-        if not semantic_aliases:
-            return test_files
-
-        return [
-            fname
-            for fname in test_files
-            if any(alias in fname.lower() for alias in semantic_aliases)
-        ]
-
     def _query_indirect_call_tests(self, primary_result: dict, sparse_files: list | None = None) -> dict:
         """
         Tertiary pass: find tests that call the same virtual / function-pointer
@@ -1497,26 +1469,6 @@ class Targeting:
             f.name for f in test_dir.iterdir()
             if f.name.endswith(".sql") or f.name.endswith(".sh")
         ]
-
-        semantic_aliases = self._get_path_semantic_aliases(changed_src_files)
-        if semantic_aliases:
-            semantic_filtered_tests = self._filter_tests_by_path_semantics(
-                all_test_files,
-                semantic_aliases,
-            )
-            if not semantic_filtered_tests:
-                print(
-                    "[find_tests] keyword-fallback: no tests match semantic aliases "
-                    f"{semantic_aliases}; skipping keyword fallback"
-                )
-                return []
-            if len(semantic_filtered_tests) != len(all_test_files):
-                print(
-                    "[find_tests] keyword-fallback: narrowed test pool from "
-                    f"{len(all_test_files)} to {len(semantic_filtered_tests)} using "
-                    f"semantic aliases {semantic_aliases}"
-                )
-            all_test_files = semantic_filtered_tests
 
         # For each candidate keyword, count how many tests it matches.
         # Keywords matching too many tests (too generic) or zero tests
