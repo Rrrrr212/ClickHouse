@@ -45,7 +45,6 @@
     M(IcebergMetadataLog,    iceberg_metadata_log, "Contains content of Iceberg metadata files.") \
     M(DeltaMetadataLog,    delta_lake_metadata_log, "Contains content of Delta metadata files.") \
     M(PredicateStatisticsLog, predicate_statistics_log, "Contains sampled per-predicate selectivity statistics collected during query execution. Sampling is controlled by predicate_statistics_sample_rate; lower values increase overhead and should be tuned with care.") \
-    M(SlowQueryLog,          slow_log,             "Contains information about slow queries.") \
 
 #define LIST_OF_CLOUD_SYSTEM_LOGS(M) \
     M(DistributedCacheLog, distributed_cache_log, "Contains the history of all interactions with distributed cache.") \

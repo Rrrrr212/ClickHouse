@@ -1975,12 +1975,6 @@ Allows you to select the max window log of ZSTD (it will not be used for MergeTr
     DECLARE(UInt64, priority, 0, R"(
 Priority of the query. 1 - the highest, higher value - lower priority; 0 - do not use priorities.
 )", 0) \
-    DECLARE(Bool, slow_query_log_enable, false, R"(
-Enable or disable logging of slow queries to system.slow_log.
-)", 0) \
-    DECLARE(Milliseconds, slow_query_time_threshold_ms, 10000, R"(
-Threshold in milliseconds for slow query log. Queries taking longer than this will be logged.
-)", 0) \
     DECLARE(Bool, log_queries, true, R"(
 Setting up query logging.
 
