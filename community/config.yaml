@@ -1,0 +1,29 @@
+community_links:
+  - name: "Slack"
+    url: "https://clickhouse.com/slack"
+    description: "and"
+    inline: true
+  - name: "Telegram"
+    url: "https://telegram.me/clickhouse_en"
+    description: "allow chatting with ClickHouse users in real-time."
+    inline: false
+  - name: "YouTube channel"
+    url: "https://www.youtube.com/c/ClickHouseDB"
+    description: "has a lot of content about ClickHouse in video format."
+    inline: false
+  - name: "Blog"
+    url: "https://clickhouse.com/blog/"
+    description: "contains various ClickHouse-related articles, as well as announcements and reports about events."
+    inline: false
+  - name: "Bluesky"
+    url: "https://bsky.app/profile/clickhouse.com"
+    description: "and"
+    inline: true
+  - name: "X"
+    url: "https://x.com/ClickHouseDB"
+    description: "for short news."
+    inline: false
+
+next_release:
+  version: "26.6"
+  date: "2026-06-21"

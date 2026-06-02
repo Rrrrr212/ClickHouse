@@ -25,16 +25,20 @@ curl https://clickhouse.com/ | sh
 * [ClickHouse Cloud](https://clickhouse.cloud) ClickHouse as a service, built by the creators and maintainers.
 * [Tutorial](https://clickhouse.com/docs/getting_started/tutorial/) shows how to set up and query a small ClickHouse cluster.
 * [Documentation](https://clickhouse.com/docs/) provides more in-depth information.
+<!-- COMMUNITY_LINKS_START -->
 * [YouTube channel](https://www.youtube.com/c/ClickHouseDB) has a lot of content about ClickHouse in video format.
-* [ClickHouse Theater](https://presentations.clickhouse.com/) contains presentations and videos about ClickHouse.
 * [Slack](https://clickhouse.com/slack) and [Telegram](https://telegram.me/clickhouse_en) allow chatting with ClickHouse users in real-time.
 * [Blog](https://clickhouse.com/blog/) contains various ClickHouse-related articles, as well as announcements and reports about events.
 * [Bluesky](https://bsky.app/profile/clickhouse.com) and [X](https://x.com/ClickHouseDB) for short news.
+<!-- COMMUNITY_LINKS_END -->
+* [ClickHouse Theater](https://presentations.clickhouse.com/) contains presentations and videos about ClickHouse.
 * [Code Browser (github.dev)](https://github.dev/ClickHouse/ClickHouse) with syntax highlighting, powered by github.dev.
 * [Contacts](https://clickhouse.com/company/contact) can help to get your questions answered if there are any.
 
 ## Monthly Release & Community Call
 
+<!-- COUNTDOWN_START -->
+<!-- COUNTDOWN_END -->
 Join us for the [ClickHouse **26.5** Release Call](https://clickhouse.com/company/events/v26-5-community-release-call) on May 21, 2026.
 
 Watch all release presentations and videos at [ClickHouse Theater](https://presentations.clickhouse.com/) and [YouTube Playlist](https://www.youtube.com/playlist?list=PL0Z2YDlm0b3jAlSy1JxyP8zluvXaN3nxU).
