@@ -1,0 +1,125 @@
+diff --git a/tests/queries/0_stateless/04303_distributed_final_partition_prewhere_regression.reference b/tests/queries/0_stateless/04303_distributed_final_partition_prewhere_regression.reference
+new file mode 100644
+index 00000000000..2b19bbc1502
+--- /dev/null
++++ b/tests/queries/0_stateless/04303_distributed_final_partition_prewhere_regression.reference
+@@ -0,0 +1,3 @@
++2024-01-01	1	new_jan
++2024-01-02	2	keep_jan
++1	new_feb	new_feb
+diff --git a/tests/queries/0_stateless/04303_distributed_final_partition_prewhere_regression.sql b/tests/queries/0_stateless/04303_distributed_final_partition_prewhere_regression.sql
+new file mode 100644
+index 00000000000..130cc7a7105
+--- /dev/null
++++ b/tests/queries/0_stateless/04303_distributed_final_partition_prewhere_regression.sql
+@@ -0,0 +1,46 @@
++DROP TABLE IF EXISTS dist_04303;
++DROP TABLE IF EXISTS dist_04303_local;
++
++CREATE TABLE dist_04303_local
++(
++    d Date,
++    id UInt32,
++    version UInt32,
++    value String
++)
++ENGINE = ReplacingMergeTree(version)
++PARTITION BY toYYYYMM(d)
++ORDER BY (d, id)
++SETTINGS min_bytes_for_wide_part = 0, index_granularity = 1;
++
++CREATE TABLE dist_04303 AS dist_04303_local
++ENGINE = Distributed(test_shard_localhost, currentDatabase(), dist_04303_local, id);
++
++SET insert_distributed_sync = 1;
++SET optimize_move_to_prewhere = 1;
++
++INSERT INTO dist_04303_local VALUES
++('2024-01-01', 1, 1, 'old_jan'),
++('2024-01-01', 1, 2, 'new_jan'),
++('2024-01-02', 2, 1, 'keep_jan'),
++('2024-02-01', 1, 1, 'old_feb');
++
++INSERT INTO dist_04303_local VALUES
++('2024-02-01', 1, 2, 'new_feb'),
++('2024-02-02', 3, 1, 'keep_feb');
++
++SELECT d, id, value
++FROM dist_04303
++FINAL
++PREWHERE id IN (1, 2)
++WHERE d < '2024-02-01'
++ORDER BY d, id;
++
++SELECT count(), min(value), max(value)
++FROM dist_04303
++FINAL
++PREWHERE id = 1
++WHERE d >= '2024-02-01';
++
++DROP TABLE dist_04303;
++DROP TABLE dist_04303_local;
+diff --git a/tests/queries/0_stateless/04304_compressed_partition_move_attach_regression.reference b/tests/queries/0_stateless/04304_compressed_partition_move_attach_regression.reference
+new file mode 100644
+index 00000000000..bc48128adbc
+--- /dev/null
++++ b/tests/queries/0_stateless/04304_compressed_partition_move_attach_regression.reference
+@@ -0,0 +1,9 @@
++after_move
++2	30	gamma
++2	40	delta
++1	10	alpha
++1	20	beta
++after_attach
++2	alpha	beta
++1	10	alpha
++1	20	beta
+diff --git a/tests/queries/0_stateless/04304_compressed_partition_move_attach_regression.sql b/tests/queries/0_stateless/04304_compressed_partition_move_attach_regression.sql
+new file mode 100644
+index 00000000000..4103b4f7b0f
+--- /dev/null
++++ b/tests/queries/0_stateless/04304_compressed_partition_move_attach_regression.sql
+@@ -0,0 +1,43 @@
++DROP TABLE IF EXISTS src_04304;
++DROP TABLE IF EXISTS dst_04304;
++
++CREATE TABLE src_04304
++(
++    p UInt8,
++    id UInt32,
++    payload String CODEC(ZSTD(1))
++)
++ENGINE = MergeTree
++PARTITION BY p
++ORDER BY id
++SETTINGS compress_marks = 1, min_bytes_for_wide_part = 0, index_granularity = 1;
++
++CREATE TABLE dst_04304 AS src_04304
++ENGINE = MergeTree
++PARTITION BY p
++ORDER BY id
++SETTINGS compress_marks = 1, min_bytes_for_wide_part = 0, index_granularity = 1;
++
++INSERT INTO src_04304 VALUES
++(1, 10, 'alpha'),
++(1, 20, 'beta'),
++(2, 30, 'gamma'),
++(2, 40, 'delta');
++
++OPTIMIZE TABLE src_04304 FINAL;
++
++ALTER TABLE src_04304 MOVE PARTITION 1 TO TABLE dst_04304;
++
++SELECT 'after_move';
++SELECT p, id, payload FROM src_04304 ORDER BY p, id;
++SELECT p, id, payload FROM dst_04304 ORDER BY p, id;
++
++ALTER TABLE dst_04304 DETACH PARTITION 1;
++ALTER TABLE dst_04304 ATTACH PARTITION 1;
++
++SELECT 'after_attach';
++SELECT count(), min(payload), max(payload) FROM dst_04304 WHERE p = 1;
++SELECT p, id, payload FROM dst_04304 ORDER BY p, id;
++
++DROP TABLE src_04304;
++DROP TABLE dst_04304;
