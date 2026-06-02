@@ -1,0 +1,34 @@
+# ClickHouse Community Configuration
+# This file acts as the single source of truth for all community channels.
+# Scripts can parse this file to automatically update README.md, docs, and website footers.
+
+channels:
+  slack:
+    name: "Slack"
+    url: "https://clickhouse.com/slack"
+    description: "Join the #general channel for daily discussions and troubleshooting."
+    icon: "slack-icon.svg"
+  
+  telegram:
+    name: "Telegram"
+    url: "https://t.me/clickhouse_en"
+    description: "Real-time chat with ClickHouse users and developers."
+    icon: "telegram-icon.svg"
+  
+  twitter:
+    name: "Twitter"
+    url: "https://twitter.com/ClickHouse"
+    description: "Follow us for the latest news and announcements."
+    icon: "twitter-icon.svg"
+
+  github_discussions:
+    name: "GitHub Discussions"
+    url: "https://github.com/ClickHouse/ClickHouse/discussions"
+    description: "Q&A, feature requests, and longer-form technical discussions."
+    icon: "github-icon.svg"
+
+  newsletter:
+    name: "Newsletter"
+    url: "https://clickhouse.com/company/newsletters"
+    description: "Subscribe for monthly product updates and community highlights."
+    icon: "email-icon.svg"
