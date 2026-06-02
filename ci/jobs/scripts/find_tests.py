@@ -1909,6 +1909,52 @@ class Targeting:
         all_ranked = sorted(width_score, key=sort_key)
         ranked = [t for t in all_ranked if width_score[t] >= effective_min][:MAX_OUTPUT_TESTS]
 
+        # 关键词过滤：当修改的源文件包含特定领域关键词时，优先选择包含这些关键词的测试
+        # 同时排除明显不相关的测试
+        changed_src_files = list(dict.fromkeys(
+            f for f, ln in changed_lines
+            if any(f.startswith(p) for p in ("src/", "programs/", "utils/", "base/"))
+            and (f.endswith(".cpp") or f.endswith(".h"))
+            and f not in self.SHARED_REGISTRY_FILES
+        ))
+        # 提取领域关键词
+        domain_keywords = set()
+        for f in changed_src_files:
+            domain_keywords.update(self._extract_domain_keywords(f.split("/")[-1]))
+            # 同时从路径组件中提取关键词
+            parts = f.replace("\\", "/").split("/")
+            for part in parts[:-1]:
+                part_kws = self._extract_domain_keywords(part + ".cpp")
+                domain_keywords.update(part_kws)
+            # 额外检查文件路径中是否包含常见的领域关键词（如 Keeper、ZooKeeper）
+            # 这些可能是通过 _extract_domain_keywords 没有正确提取到的
+            f_lower = f.lower()
+            if "keeper" in f_lower:
+                domain_keywords.add("Keeper")
+            if "zookeeper" in f_lower:
+                domain_keywords.add("ZooKeeper")
+        # 如果存在领域关键词，应用过滤逻辑
+        if domain_keywords:
+            # 将关键词转为小写以便匹配
+            domain_keywords_lower = [kw.lower() for kw in domain_keywords]
+            # 分离相关测试和不相关测试
+            relevant_tests = []
+            irrelevant_tests = []
+            for t in ranked:
+                t_lower = t.lower()
+                # 检查测试名是否包含任何领域关键词
+                has_keyword = any(kw in t_lower for kw in domain_keywords_lower)
+                if has_keyword:
+                    relevant_tests.append(t)
+                else:
+                    irrelevant_tests.append(t)
+            # 现在重新组织 ranked 列表，将相关测试放在前面
+            # 保留 70% 相关测试，30% 其他高评分测试（最多 MAX_OUTPUT_TESTS）
+            num_relevant_keep = min(len(relevant_tests), int(MAX_OUTPUT_TESTS * 0.7))
+            num_other_keep = MAX_OUTPUT_TESTS - num_relevant_keep
+            ranked = relevant_tests[:num_relevant_keep] + irrelevant_tests[:num_other_keep]
+            print(f"[find_tests] domain-keyword filter: kept {num_relevant_keep} relevant tests matching {sorted(domain_keywords)}")
+
         # Broad-tier2 guarantee: ensure the top-N high-cov_regions broad-tier2 tests
         # are always in the output, even if the score-ranked list is already at the cap.
         #
